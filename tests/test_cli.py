@@ -8,3 +8,44 @@ def test_cli_lists_required_command_groups() -> None:
     assert "camera" in help_text
     assert "speaker" in help_text
     assert "report" in help_text
+
+
+def test_cli_parses_speaker_trial_commands() -> None:
+    parser = build_parser()
+    run = parser.parse_args(
+        [
+            "speaker",
+            "run",
+            "--backend",
+            "direct",
+            "--count",
+            "30",
+            "--interval-seconds",
+            "8",
+        ]
+    )
+    annotate = parser.parse_args(
+        [
+            "speaker",
+            "annotate",
+            "--run-id",
+            "run-1",
+            "--count",
+            "30",
+            "--missed",
+            "2,7",
+        ]
+    )
+
+    assert (run.speaker_command, run.backend, run.count, run.interval_seconds) == (
+        "run",
+        "direct",
+        30,
+        8,
+    )
+    assert (annotate.speaker_command, annotate.run_id, annotate.count, annotate.missed) == (
+        "annotate",
+        "run-1",
+        30,
+        "2,7",
+    )
