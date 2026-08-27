@@ -1,0 +1,10 @@
+.worktrees/
+.env.poc
+artifacts/
+config/poc-devices.json
+deploy/go2rtc/state/
+deploy/homeassistant/state/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+*.pyc
