@@ -1,0 +1,31 @@
+services:
+  go2rtc:
+    image: ghcr.io/alexxit/go2rtc:1.9.14
+    container_name: daihougou-go2rtc
+    network_mode: host
+    restart: unless-stopped
+    volumes:
+      - ./deploy/go2rtc/state:/config
+    command: ["-c", "/config/go2rtc.yaml"]
+
+  probe:
+    build:
+      context: .
+      dockerfile: docker/poc.Dockerfile
+    image: daihougou-poc:local
+    network_mode: host
+    env_file: .env.poc
+    volumes:
+      - ./artifacts:/workspace/artifacts
+      - ./config:/workspace/config:ro
+    profiles: ["tools"]
+
+  homeassistant:
+    image: ghcr.io/home-assistant/home-assistant:2026.8.3
+    container_name: daihougou-homeassistant
+    network_mode: host
+    restart: unless-stopped
+    stop_grace_period: 60s
+    volumes:
+      - ./deploy/homeassistant/state:/config
+    profiles: ["ha"]

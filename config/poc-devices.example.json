@@ -1,0 +1,12 @@
+{
+  "cameras": [
+    {"name": "xiaobai", "miot_model": "", "firmware": "", "ip": "", "codec": ""},
+    {"name": "xiaobai_25k", "miot_model": "", "firmware": "", "ip": "", "codec": ""}
+  ],
+  "speaker": {
+    "name": "xiaomi_play_enhanced",
+    "miot_model": "xiaomi.wifispeaker.l05c",
+    "firmware": ""
+  },
+  "primary_camera": "xiaobai_25k"
+}
