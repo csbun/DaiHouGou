@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import TypedDict
 
 
@@ -156,6 +157,44 @@ def _format_speaker_summary(name: str, summary: BackendSummary) -> str:
     )
 
 
+def _latest_host_session(host_stats: str) -> str:
+    marker = "HOST_STATS_SESSION_START "
+    if marker not in host_stats:
+        return ""
+    return marker + host_stats.rsplit(marker, 1)[1]
+
+
+def _memory_samples(host_stats: str) -> list[int]:
+    return [
+        int(line.split()[1])
+        for line in host_stats.splitlines()
+        if line.startswith("MemAvailable:") and len(line.split()) >= 2
+    ]
+
+
+def host_resources_pass(host_stats: str) -> bool:
+    session = _latest_host_session(host_stats)
+    samples = _memory_samples(session)
+    timestamps: list[datetime] = []
+    for line in session.splitlines():
+        try:
+            timestamps.append(datetime.fromisoformat(line))
+        except ValueError:
+            continue
+    duration_seconds = (
+        (timestamps[-1] - timestamps[0]).total_seconds() if len(timestamps) >= 2 else 0
+    )
+    oom_evidence_available = "OOM_CHECK_UNAVAILABLE" not in session
+    no_oom = not any(marker in session.lower() for marker in ("out of memory", "killed process"))
+    return bool(
+        len(samples) >= 2
+        and min(samples) >= 768000
+        and duration_seconds >= 28700
+        and oom_evidence_available
+        and no_oom
+    )
+
+
 def render_gate_report(
     events: list[dict[str, object]], inventory: dict[str, object], host_stats: str
 ) -> str:
@@ -215,15 +254,9 @@ def render_gate_report(
         for event in recovery_events
     )
 
-    memory_samples = [
-        int(line.split()[1])
-        for line in host_stats.splitlines()
-        if line.startswith("MemAvailable:") and len(line.split()) >= 2
-    ]
-    no_oom = not any(
-        marker in host_stats.lower() for marker in ("out of memory", "killed process")
-    )
-    memory_floor_pass = bool(memory_samples) and min(memory_samples) >= 768000 and no_oom
+    latest_host_session = _latest_host_session(host_stats)
+    memory_samples = _memory_samples(latest_host_session)
+    memory_floor_pass = host_resources_pass(host_stats)
     inventory_pass = _inventory_complete(inventory)
     speaker_30_pass = bool(selected) and _speaker_30_pass(runs_30.get(selected))
     passed = all(

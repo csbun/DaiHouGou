@@ -35,16 +35,18 @@ def annotate_audible(report: JsonlReport, run_id: str, count: int, missed: set[i
     invalid = {number for number in missed if number < 1 or number > count}
     if invalid:
         raise ValueError(f"missed trial numbers out of range: {sorted(invalid)}")
+    audible_successes = count - len(missed)
+    threshold = 29 if count == 30 else 98 if count == 100 else count
     report.append(
         ProbeEvent.create(
             component="speaker.manual",
             operation="audible_annotation",
-            success=(count - len(missed)) / count >= 0.98,
+            success=audible_successes >= threshold,
             correlation_id=run_id,
             details={
                 "count": count,
                 "missed": sorted(missed),
-                "audible_successes": count - len(missed),
+                "audible_successes": audible_successes,
             },
         )
     )

@@ -21,6 +21,15 @@ def _run(command: list[str], env: dict[str, str], timeout: int) -> tuple[int, st
     return completed.returncode, completed.stdout, completed.stderr
 
 
+def _redact_error(value: str | bytes | None, secrets: tuple[str, ...]) -> str:
+    if isinstance(value, bytes):
+        value = value.decode(errors="replace")
+    redacted = value or ""
+    for secret in secrets:
+        redacted = redacted.replace(secret, "[REDACTED]")
+    return redacted[-500:]
+
+
 class DirectSpeaker:
     def __init__(self, user: str, password: str, did: str, run: Runner = _run) -> None:
         if not user or not password or not did:
@@ -28,13 +37,23 @@ class DirectSpeaker:
         self._env = {**os.environ, "MI_USER": user, "MI_PASS": password, "MI_DID": did}
         self._did = did
         self._run = run
+        self._secrets = (user, password, did)
 
     def speak(self, text: str) -> SpeakResult:
         payload = json.dumps({"did": self._did, "siid": 5, "aiid": 3, "in": [text]})
         started = time.monotonic()
-        returncode, stdout, stderr = self._run(
-            ["python", "-m", "miservice", "action", payload], self._env, 30
-        )
+        try:
+            returncode, stdout, stderr = self._run(
+                ["python", "-m", "miservice", "action", payload], self._env, 30
+            )
+        except subprocess.TimeoutExpired as exc:
+            latency_ms = round((time.monotonic() - started) * 1000)
+            return SpeakResult(
+                success=False,
+                latency_ms=latency_ms,
+                code="timeout",
+                error=_redact_error(exc.stderr, self._secrets),
+            )
         latency_ms = round((time.monotonic() - started) * 1000)
         try:
             body = json.loads(stdout)
@@ -42,4 +61,9 @@ class DirectSpeaker:
             body = {}
         code = body.get("code", returncode)
         success = returncode == 0 and code in {0, None}
-        return SpeakResult(success=success, latency_ms=latency_ms, code=code, error=stderr[-500:])
+        return SpeakResult(
+            success=success,
+            latency_ms=latency_ms,
+            code=code,
+            error=_redact_error(stderr, self._secrets),
+        )

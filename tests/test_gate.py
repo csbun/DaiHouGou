@@ -1,5 +1,6 @@
 from daihougou_poc.gate import (
     choose_speaker_backend,
+    host_resources_pass,
     render_gate_report,
     summarize_speaker_events,
 )
@@ -14,6 +15,21 @@ def test_gate_prefers_more_reliable_backend_then_lower_p95() -> None:
 def test_gate_rejects_backends_below_minimum() -> None:
     direct = {"api_successes": 98, "audible_successes": 98, "count": 100, "p95_ms": 900}
     assert choose_speaker_backend({"direct": direct}) is None
+
+
+def test_host_gate_requires_a_full_session_and_oom_visibility() -> None:
+    one_sample = "HOST_STATS_SESSION_START 2026-08-27T00:00:00+00:00\nMemAvailable: 800000 kB\n"
+    full_session = (
+        "HOST_STATS_SESSION_START 2026-08-27T00:00:00+00:00\n"
+        "2026-08-27T00:00:00+00:00\n"
+        "MemAvailable: 800000 kB\n"
+        "2026-08-27T08:00:00+00:00\n"
+        "MemAvailable: 790000 kB"
+    )
+
+    assert host_resources_pass(one_sample) is False
+    assert host_resources_pass(full_session) is True
+    assert host_resources_pass(full_session + "\nOOM_CHECK_UNAVAILABLE") is False
 
 
 def _speaker_run(
@@ -146,7 +162,14 @@ def test_report_passes_only_after_all_required_gates() -> None:
         "primary_camera": "xiaobai_25k",
     }
 
-    report = render_gate_report(events, inventory, "MemAvailable: 800000 kB\n")
+    host_stats = (
+        "HOST_STATS_SESSION_START 2026-08-27T00:00:00+00:00\n"
+        "2026-08-27T00:00:00+00:00\n"
+        "MemAvailable: 800000 kB\n"
+        "2026-08-27T08:00:00+00:00\n"
+        "MemAvailable: 790000 kB"
+    )
+    report = render_gate_report(events, inventory, host_stats)
 
     assert "## Selected Speaker Backend\n- `direct`" in report
     assert "API 99/100; audible 98/100" in report

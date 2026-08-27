@@ -29,13 +29,18 @@ def build_ffmpeg_command(rtsp_url: str, duration_seconds: int) -> list[str]:
 
 def decode(rtsp_url: str, duration_seconds: int) -> tuple[bool, int, str]:
     started = time.monotonic()
-    completed = subprocess.run(
-        build_ffmpeg_command(rtsp_url, duration_seconds),
-        timeout=duration_seconds + 60,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
+    try:
+        completed = subprocess.run(
+            build_ffmpeg_command(rtsp_url, duration_seconds),
+            timeout=duration_seconds + 60,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except subprocess.TimeoutExpired as exc:
+        elapsed = round(time.monotonic() - started)
+        error = exc.stderr.decode(errors="replace") if isinstance(exc.stderr, bytes) else exc.stderr
+        return False, elapsed, (error or "ffmpeg timed out")[-2000:]
     elapsed = round(time.monotonic() - started)
     return completed.returncode == 0, elapsed, completed.stderr[-2000:]
 
@@ -49,5 +54,6 @@ def wait_for_snapshot(api_url: str, stream: str, max_seconds: int) -> int | None
                 if response.status == 200 and response.headers.get_content_type() == "image/jpeg":
                     return round(time.monotonic() - started)
         except (URLError, TimeoutError):
-            time.sleep(2)
+            pass
+        time.sleep(2)
     return None

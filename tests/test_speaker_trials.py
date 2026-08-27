@@ -17,3 +17,11 @@ def test_trials_are_numbered_and_manual_misses_are_separate(tmp_path: Path) -> N
     events = report.read()
     assert [event["details"]["trial"] for event in events[:3]] == [1, 2, 3]
     assert events[-1]["details"]["audible_successes"] == 2
+
+
+def test_29_of_30_audible_trials_pass_the_initial_gate(tmp_path: Path) -> None:
+    report = JsonlReport(tmp_path / "events.jsonl")
+
+    annotate_audible(report, run_id="run-30", count=30, missed={2})
+
+    assert report.read()[0]["success"] is True
