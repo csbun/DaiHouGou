@@ -49,3 +49,24 @@ def test_cli_parses_speaker_trial_commands() -> None:
         30,
         "2,7",
     )
+
+
+def test_cli_parses_camera_probe_commands() -> None:
+    parser = build_parser()
+    decode = parser.parse_args(
+        ["camera", "decode", "--stream", "xiaobai", "--duration-seconds", "1800"]
+    )
+    wait = parser.parse_args(
+        ["camera", "wait", "--stream", "xiaobai_25k", "--max-seconds", "60"]
+    )
+
+    assert (decode.camera_command, decode.stream, decode.duration_seconds) == (
+        "decode",
+        "xiaobai",
+        1800,
+    )
+    assert (wait.camera_command, wait.stream, wait.max_seconds) == (
+        "wait",
+        "xiaobai_25k",
+        60,
+    )

@@ -2,6 +2,8 @@ import argparse
 import json
 import os
 
+from daihougou_poc.camera import decode, wait_for_snapshot
+from daihougou_poc.events import ProbeEvent
 from daihougou_poc.report import JsonlReport
 from daihougou_poc.settings import Settings
 from daihougou_poc.speaker_trials import annotate_audible, run_trials
@@ -27,8 +29,19 @@ def _non_negative_float(value: str) -> float:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="daihougou-poc")
     commands = parser.add_subparsers(dest="group", required=True)
-    for name in ("inventory", "camera", "report"):
+    for name in ("inventory", "report"):
         commands.add_parser(name)
+
+    camera = commands.add_parser("camera")
+    camera_commands = camera.add_subparsers(dest="camera_command", required=True)
+
+    camera_decode = camera_commands.add_parser("decode")
+    camera_decode.add_argument("--stream", required=True)
+    camera_decode.add_argument("--duration-seconds", type=_positive_int, required=True)
+
+    camera_wait = camera_commands.add_parser("wait")
+    camera_wait.add_argument("--stream", required=True)
+    camera_wait.add_argument("--max-seconds", type=_positive_int, required=True)
 
     speaker = commands.add_parser("speaker")
     speaker_commands = speaker.add_subparsers(dest="speaker_command", required=True)
@@ -73,13 +86,51 @@ def _missed_numbers(value: str) -> set[int]:
     return {int(number.strip()) for number in value.split(",")}
 
 
+def _run_camera_command(args: argparse.Namespace, settings: Settings, report: JsonlReport) -> bool:
+    if args.camera_command == "decode":
+        rtsp_url = f"{settings.go2rtc_rtsp_base}/{args.stream}"
+        success, elapsed, error = decode(rtsp_url, args.duration_seconds)
+        report.append(
+            ProbeEvent.create(
+                component=f"camera.{args.stream}",
+                operation="decode",
+                success=success,
+                details={
+                    "duration_requested": args.duration_seconds,
+                    "duration_actual": elapsed,
+                    "error": error[-2000:],
+                },
+            )
+        )
+        return success
+
+    recovery_seconds = wait_for_snapshot(
+        settings.go2rtc_api_url, args.stream, args.max_seconds
+    )
+    success = recovery_seconds is not None
+    report.append(
+        ProbeEvent.create(
+            component=f"camera.{args.stream}",
+            operation="recovery",
+            success=success,
+            details={"recovery_seconds": recovery_seconds},
+        )
+    )
+    return success
+
+
 def main() -> None:
     args = build_parser().parse_args()
-    if args.group != "speaker":
+    if args.group not in {"camera", "speaker"}:
         return
 
     settings = Settings.from_mapping(dict(os.environ))
     report = _event_report(settings)
+    if args.group == "camera":
+        if not _run_camera_command(args, settings, report):
+            raise SystemExit(1)
+        return
+
     if args.speaker_command == "run":
         speaker = _direct_speaker(settings) if args.backend == "direct" else _ha_speaker(settings)
         run_id = run_trials(args.backend, speaker, report, args.count, args.interval_seconds)
