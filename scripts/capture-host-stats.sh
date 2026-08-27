@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-output_path="${1:?usage: capture-host-stats.sh OUTPUT_PATH [INTERVAL_SECONDS]}"
+output_path="${1:?usage: capture-host-stats.sh OUTPUT_PATH INTERVAL_SECONDS CAMPAIGN_ID}"
 interval_seconds="${2:-30}"
+campaign_id="${3:?usage: capture-host-stats.sh OUTPUT_PATH INTERVAL_SECONDS CAMPAIGN_ID}"
 mkdir -p "$(dirname "$output_path")"
-printf 'HOST_STATS_SESSION_START %s\n' "$(date --iso-8601=seconds)" >> "$output_path"
+printf 'HOST_STATS_SESSION_START campaign=%s timestamp=%s interval=%s\n' \
+  "$campaign_id" "$(date --iso-8601=seconds)" "$interval_seconds" >> "$output_path"
 
 while true; do
   {

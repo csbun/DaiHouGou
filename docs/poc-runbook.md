@@ -22,7 +22,9 @@ chmod 600 .env.poc
 ```
 
 Fill the Xiaomi and optional Home Assistant secrets in `.env.poc` locally. Never commit this
-file or paste its contents into an issue or report.
+file or paste its contents into an issue or report. Replace `POC_CAMPAIGN_ID` with a new unique
+identifier before each complete PoC, and do not change it until `gate.md` is generated. Keep
+`POC_INVENTORY_PATH=/workspace/config/poc-devices.json` unless the Compose mounts are changed.
 
 ## 3. Start go2rtc And Configure Both Cameras
 
@@ -50,6 +52,9 @@ cp config/poc-devices.example.json config/poc-devices.json
 
 Fill the actual MIoT model, firmware, LAN IP, and active codec for both cameras, plus model and
 firmware for the speaker. Do not add credentials, tokens, DIDs, or Xiaomi source URLs.
+Do not remove a failed camera from the inventory; the gate requires exactly `xiaobai` and
+`xiaobai_25k`, with a unique primary camera selected from those two names. Changing this file
+changes its fingerprint and intentionally invalidates earlier probe evidence.
 
 ## 5. Run Unit Tests And Lint
 
@@ -65,7 +70,10 @@ docker compose -f compose.poc.yaml config --quiet
 Start host sampling in a separate terminal:
 
 ```bash
-scripts/capture-host-stats.sh artifacts/poc/host-stats-30m.log 30
+set -a
+source .env.poc
+set +a
+scripts/capture-host-stats.sh artifacts/poc/host-stats-30m.log 30 "$POC_CAMPAIGN_ID"
 ```
 
 Run each camera separately:
@@ -78,8 +86,10 @@ docker compose -f compose.poc.yaml --profile tools run --rm probe camera decode 
 Restart go2rtc and test recovery of the configured primary camera:
 
 ```bash
+go2rtc_restart_id="go2rtc-$(date +%s)"
 docker compose -f compose.poc.yaml restart go2rtc
-docker compose -f compose.poc.yaml --profile tools run --rm probe camera wait --stream xiaobai_25k --max-seconds 60
+docker compose -f compose.poc.yaml --profile tools run --rm probe camera wait \
+  --stream xiaobai_25k --max-seconds 60 --restart-id "$go2rtc_restart_id"
 ```
 
 Both decode commands must complete, and recovery must complete within 60 seconds.
@@ -97,6 +107,19 @@ Create a dedicated non-administrator user and a Long-Lived Access Token for that
 working L05C service, entity, text field, and any extra data in Developer Tools, then update only
 the matching `HA_*` values in `.env.poc`. Record a failed non-administrator action as a failure;
 do not substitute an owner token.
+
+Restart HA, wait until its UI is healthy, then perform the explicit post-restart validation using
+the dedicated non-administrator token:
+
+```bash
+ha_restart_id="ha-$(date +%s)"
+docker compose -f compose.poc.yaml restart homeassistant
+docker compose -f compose.poc.yaml --profile tools run --rm probe speaker validate-ha \
+  --restart-id "$ha_restart_id" --non-admin-confirmed
+```
+
+The confirmation flag is an operator attestation. Use it only while `.env.poc` contains the
+dedicated non-administrator user's token.
 
 ## 8. Run And Annotate Both 30-Trial Speaker Routes
 
@@ -133,12 +156,14 @@ The extended gate requires at least 99/100 API acceptances and 98/100 audible co
 Start a fresh host sampler in one terminal, then run the primary camera decode in another:
 
 ```bash
-scripts/capture-host-stats.sh artifacts/poc/host-stats-8h.log 60
+scripts/capture-host-stats.sh artifacts/poc/host-stats-8h.log 60 "$POC_CAMPAIGN_ID"
 docker compose -f compose.poc.yaml --profile tools run --rm probe camera decode --stream xiaobai_25k --duration-seconds 28800
 ```
 
 Do not declare success if any `MemAvailable` sample is below `768000 kB` or if the log contains
-an OOM-killer event. Measure a lower-quality stream first; do not add swap merely to pass.
+an OOM-killer event. The gate also rejects missing OOM visibility, gaps above 90 seconds, or a
+sampling window that does not cover the primary-camera decode. Measure a lower-quality stream
+first; do not add swap merely to pass.
 
 ## 12. Generate And Review The Gate
 

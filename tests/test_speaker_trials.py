@@ -12,11 +12,28 @@ class FakeSpeaker:
 
 def test_trials_are_numbered_and_manual_misses_are_separate(tmp_path: Path) -> None:
     report = JsonlReport(tmp_path / "events.jsonl")
-    run_id = run_trials("direct", FakeSpeaker(), report, count=3, interval_seconds=0)
-    annotate_audible(report, run_id=run_id, count=3, missed={2})
+    run_id = run_trials(
+        "direct",
+        FakeSpeaker(),
+        report,
+        count=3,
+        interval_seconds=0,
+        campaign_id="campaign-1",
+        inventory_sha256="inventory-sha",
+    )
+    annotate_audible(
+        report,
+        run_id=run_id,
+        count=3,
+        missed={2},
+        campaign_id="campaign-1",
+        inventory_sha256="inventory-sha",
+    )
     events = report.read()
     assert [event["details"]["trial"] for event in events[:3]] == [1, 2, 3]
     assert events[-1]["details"]["audible_successes"] == 2
+    assert all(event["campaign_id"] == "campaign-1" for event in events)
+    assert all(event["inventory_sha256"] == "inventory-sha" for event in events)
 
 
 def test_29_of_30_audible_trials_pass_the_initial_gate(tmp_path: Path) -> None:

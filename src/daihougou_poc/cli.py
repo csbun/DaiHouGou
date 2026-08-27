@@ -5,7 +5,7 @@ from pathlib import Path
 
 from daihougou_poc.camera import decode, wait_for_snapshot
 from daihougou_poc.events import ProbeEvent
-from daihougou_poc.gate import render_gate_report
+from daihougou_poc.gate import inventory_fingerprint, render_gate_report
 from daihougou_poc.report import JsonlReport
 from daihougou_poc.settings import Settings
 from daihougou_poc.speaker_trials import annotate_audible, run_trials
@@ -49,6 +49,7 @@ def build_parser() -> argparse.ArgumentParser:
     camera_wait = camera_commands.add_parser("wait")
     camera_wait.add_argument("--stream", required=True)
     camera_wait.add_argument("--max-seconds", type=_positive_int, required=True)
+    camera_wait.add_argument("--restart-id", required=True)
 
     speaker = commands.add_parser("speaker")
     speaker_commands = speaker.add_subparsers(dest="speaker_command", required=True)
@@ -62,6 +63,10 @@ def build_parser() -> argparse.ArgumentParser:
     annotate.add_argument("--run-id", required=True)
     annotate.add_argument("--count", type=_positive_int, required=True)
     annotate.add_argument("--missed", required=True)
+
+    validate_ha = speaker_commands.add_parser("validate-ha")
+    validate_ha.add_argument("--restart-id", required=True)
+    validate_ha.add_argument("--non-admin-confirmed", action="store_true", required=True)
     return parser
 
 
@@ -87,13 +92,26 @@ def _event_report(settings: Settings) -> JsonlReport:
     return JsonlReport(settings.artifact_dir / "events.jsonl")
 
 
+def _probe_context(settings: Settings) -> tuple[str, str]:
+    inventory = json.loads(settings.inventory_path.read_text(encoding="utf-8"))
+    if not isinstance(inventory, dict):
+        raise TypeError("inventory must contain a JSON object")
+    return settings.campaign_id, inventory_fingerprint(inventory)
+
+
 def _missed_numbers(value: str) -> set[int]:
     if not value.strip():
         return set()
     return {int(number.strip()) for number in value.split(",")}
 
 
-def _run_camera_command(args: argparse.Namespace, settings: Settings, report: JsonlReport) -> bool:
+def _run_camera_command(
+    args: argparse.Namespace,
+    settings: Settings,
+    report: JsonlReport,
+    campaign_id: str,
+    inventory_sha256: str,
+) -> bool:
     if args.camera_command == "decode":
         rtsp_url = f"{settings.go2rtc_rtsp_base}/{args.stream}"
         success, elapsed, error = decode(rtsp_url, args.duration_seconds)
@@ -102,6 +120,8 @@ def _run_camera_command(args: argparse.Namespace, settings: Settings, report: Js
                 component=f"camera.{args.stream}",
                 operation="decode",
                 success=success,
+                campaign_id=campaign_id,
+                inventory_sha256=inventory_sha256,
                 details={
                     "duration_requested": args.duration_seconds,
                     "duration_actual": elapsed,
@@ -120,7 +140,9 @@ def _run_camera_command(args: argparse.Namespace, settings: Settings, report: Js
             component=f"camera.{args.stream}",
             operation="recovery",
             success=success,
-            details={"recovery_seconds": recovery_seconds},
+            campaign_id=campaign_id,
+            inventory_sha256=inventory_sha256,
+            details={"recovery_seconds": recovery_seconds, "restart_id": args.restart_id},
         )
     )
     return success
@@ -131,7 +153,7 @@ def _run_gate_command(args: argparse.Namespace, settings: Settings, events: Json
     if not isinstance(inventory, dict):
         raise TypeError("inventory must contain a JSON object")
     host_stats = Path(args.host_stats).read_text(encoding="utf-8")
-    rendered = render_gate_report(events.read(), inventory, host_stats)
+    rendered = render_gate_report(events.read(), inventory, host_stats, settings.campaign_id)
     output_path = settings.artifact_dir / "gate.md"
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(rendered + "\n", encoding="utf-8")
@@ -152,14 +174,55 @@ def main() -> None:
         return
 
     if args.group == "camera":
-        if not _run_camera_command(args, settings, report):
+        campaign_id, inventory_sha256 = _probe_context(settings)
+        if not _run_camera_command(
+            args, settings, report, campaign_id, inventory_sha256
+        ):
             raise SystemExit(1)
         return
 
+    campaign_id, inventory_sha256 = _probe_context(settings)
     if args.speaker_command == "run":
         speaker = _direct_speaker(settings) if args.backend == "direct" else _ha_speaker(settings)
-        run_id = run_trials(args.backend, speaker, report, args.count, args.interval_seconds)
+        run_id = run_trials(
+            args.backend,
+            speaker,
+            report,
+            args.count,
+            args.interval_seconds,
+            campaign_id,
+            inventory_sha256,
+        )
         print(run_id)
         return
 
-    annotate_audible(report, args.run_id, args.count, _missed_numbers(args.missed))
+    if args.speaker_command == "validate-ha":
+        result = _ha_speaker(settings).speak("Home Assistant restart validation")
+        report.append(
+            ProbeEvent.create(
+                component="speaker.ha",
+                operation="ha_restart_validation",
+                success=result.success and args.non_admin_confirmed,
+                campaign_id=campaign_id,
+                inventory_sha256=inventory_sha256,
+                latency_ms=result.latency_ms,
+                details={
+                    "code": result.code,
+                    "error": result.error,
+                    "restart_id": args.restart_id,
+                    "non_admin_confirmed": args.non_admin_confirmed,
+                },
+            )
+        )
+        if not result.success:
+            raise SystemExit(1)
+        return
+
+    annotate_audible(
+        report,
+        args.run_id,
+        args.count,
+        _missed_numbers(args.missed),
+        campaign_id,
+        inventory_sha256,
+    )

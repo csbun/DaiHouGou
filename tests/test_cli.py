@@ -57,7 +57,16 @@ def test_cli_parses_camera_probe_commands() -> None:
         ["camera", "decode", "--stream", "xiaobai", "--duration-seconds", "1800"]
     )
     wait = parser.parse_args(
-        ["camera", "wait", "--stream", "xiaobai_25k", "--max-seconds", "60"]
+        [
+            "camera",
+            "wait",
+            "--stream",
+            "xiaobai_25k",
+            "--max-seconds",
+            "60",
+            "--restart-id",
+            "restart-1",
+        ]
     )
 
     assert (decode.camera_command, decode.stream, decode.duration_seconds) == (
@@ -65,10 +74,29 @@ def test_cli_parses_camera_probe_commands() -> None:
         "xiaobai",
         1800,
     )
-    assert (wait.camera_command, wait.stream, wait.max_seconds) == (
+    assert (wait.camera_command, wait.stream, wait.max_seconds, wait.restart_id) == (
         "wait",
         "xiaobai_25k",
         60,
+        "restart-1",
+    )
+
+
+def test_cli_parses_ha_restart_validation() -> None:
+    args = build_parser().parse_args(
+        [
+            "speaker",
+            "validate-ha",
+            "--restart-id",
+            "ha-restart-1",
+            "--non-admin-confirmed",
+        ]
+    )
+
+    assert (args.speaker_command, args.restart_id, args.non_admin_confirmed) == (
+        "validate-ha",
+        "ha-restart-1",
+        True,
     )
 
 

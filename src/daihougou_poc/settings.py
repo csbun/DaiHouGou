@@ -1,3 +1,4 @@
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
@@ -10,9 +11,19 @@ def _require_loopback(value: str, name: str) -> str:
     return value.rstrip("/")
 
 
+def _require_campaign_id(value: str) -> str:
+    if value == "replace-with-a-unique-poc-run-id" or not re.fullmatch(
+        r"[A-Za-z0-9][A-Za-z0-9._-]{2,63}", value
+    ):
+        raise ValueError("POC_CAMPAIGN_ID must be a unique 3-64 character identifier")
+    return value
+
+
 @dataclass(frozen=True)
 class Settings:
     artifact_dir: Path
+    campaign_id: str
+    inventory_path: Path
     go2rtc_api_url: str
     go2rtc_rtsp_base: str
     mi_user: str = ""
@@ -29,6 +40,8 @@ class Settings:
     def from_mapping(cls, env: dict[str, str]) -> "Settings":
         return cls(
             artifact_dir=Path(env["POC_ARTIFACT_DIR"]),
+            campaign_id=_require_campaign_id(env["POC_CAMPAIGN_ID"]),
+            inventory_path=Path(env["POC_INVENTORY_PATH"]),
             go2rtc_api_url=_require_loopback(env["GO2RTC_API_URL"], "GO2RTC_API_URL"),
             go2rtc_rtsp_base=_require_loopback(env["GO2RTC_RTSP_BASE"], "GO2RTC_RTSP_BASE"),
             mi_user=env.get("MI_USER", ""),

@@ -12,6 +12,8 @@ def run_trials(
     report: JsonlReport,
     count: int,
     interval_seconds: float,
+    campaign_id: str = "",
+    inventory_sha256: str = "",
 ) -> str:
     run_id = str(uuid4())
     for trial in range(1, count + 1):
@@ -22,6 +24,8 @@ def run_trials(
                 operation="speak",
                 success=result.success,
                 correlation_id=run_id,
+                campaign_id=campaign_id,
+                inventory_sha256=inventory_sha256,
                 latency_ms=result.latency_ms,
                 details={"trial": trial, "code": result.code, "error": result.error},
             )
@@ -31,7 +35,14 @@ def run_trials(
     return run_id
 
 
-def annotate_audible(report: JsonlReport, run_id: str, count: int, missed: set[int]) -> None:
+def annotate_audible(
+    report: JsonlReport,
+    run_id: str,
+    count: int,
+    missed: set[int],
+    campaign_id: str = "",
+    inventory_sha256: str = "",
+) -> None:
     invalid = {number for number in missed if number < 1 or number > count}
     if invalid:
         raise ValueError(f"missed trial numbers out of range: {sorted(invalid)}")
@@ -43,6 +54,8 @@ def annotate_audible(report: JsonlReport, run_id: str, count: int, missed: set[i
             operation="audible_annotation",
             success=audible_successes >= threshold,
             correlation_id=run_id,
+            campaign_id=campaign_id,
+            inventory_sha256=inventory_sha256,
             details={
                 "count": count,
                 "missed": sorted(missed),
