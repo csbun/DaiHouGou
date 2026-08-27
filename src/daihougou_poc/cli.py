@@ -1,9 +1,11 @@
 import argparse
 import json
 import os
+from pathlib import Path
 
 from daihougou_poc.camera import decode, wait_for_snapshot
 from daihougou_poc.events import ProbeEvent
+from daihougou_poc.gate import render_gate_report
 from daihougou_poc.report import JsonlReport
 from daihougou_poc.settings import Settings
 from daihougou_poc.speaker_trials import annotate_audible, run_trials
@@ -29,8 +31,13 @@ def _non_negative_float(value: str) -> float:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="daihougou-poc")
     commands = parser.add_subparsers(dest="group", required=True)
-    for name in ("inventory", "report"):
-        commands.add_parser(name)
+    commands.add_parser("inventory")
+
+    report = commands.add_parser("report")
+    report_commands = report.add_subparsers(dest="report_command", required=True)
+    gate = report_commands.add_parser("gate")
+    gate.add_argument("--inventory", required=True)
+    gate.add_argument("--host-stats", required=True)
 
     camera = commands.add_parser("camera")
     camera_commands = camera.add_subparsers(dest="camera_command", required=True)
@@ -119,13 +126,31 @@ def _run_camera_command(args: argparse.Namespace, settings: Settings, report: Js
     return success
 
 
+def _run_gate_command(args: argparse.Namespace, settings: Settings, events: JsonlReport) -> bool:
+    inventory = json.loads(Path(args.inventory).read_text(encoding="utf-8"))
+    if not isinstance(inventory, dict):
+        raise TypeError("inventory must contain a JSON object")
+    host_stats = Path(args.host_stats).read_text(encoding="utf-8")
+    rendered = render_gate_report(events.read(), inventory, host_stats)
+    output_path = settings.artifact_dir / "gate.md"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(rendered + "\n", encoding="utf-8")
+    print(output_path)
+    return "## Stop Or Continue Decision\n- **PASS**" in rendered
+
+
 def main() -> None:
     args = build_parser().parse_args()
-    if args.group not in {"camera", "speaker"}:
+    if args.group not in {"camera", "report", "speaker"}:
         return
 
     settings = Settings.from_mapping(dict(os.environ))
     report = _event_report(settings)
+    if args.group == "report":
+        if not _run_gate_command(args, settings, report):
+            raise SystemExit(2)
+        return
+
     if args.group == "camera":
         if not _run_camera_command(args, settings, report):
             raise SystemExit(1)

@@ -70,3 +70,22 @@ def test_cli_parses_camera_probe_commands() -> None:
         "xiaobai_25k",
         60,
     )
+
+
+def test_cli_parses_gate_report_command() -> None:
+    args = build_parser().parse_args(
+        [
+            "report",
+            "gate",
+            "--inventory",
+            "/workspace/config/poc-devices.json",
+            "--host-stats",
+            "/workspace/artifacts/poc/host-stats-8h.log",
+        ]
+    )
+
+    assert (args.report_command, args.inventory, args.host_stats) == (
+        "gate",
+        "/workspace/config/poc-devices.json",
+        "/workspace/artifacts/poc/host-stats-8h.log",
+    )
