@@ -69,9 +69,61 @@ curl --fail --show-error http://127.0.0.1:1984/api
 ssh -L 1984:127.0.0.1:1984 SERVER_USER@SERVER_IP
 ```
 
-在 go2rtc 中添加小米账号，并将两台摄像头当前可用且码率最低的码流分别配置为
-`xiaobai` 和 `xiaobai_25k`。先尝试 `subtype=sd`。确认这两个名称都出现在
-`/api/streams` 中。
+以下操作从小米账号已登录并显示摄像头列表开始：
+
+1. 不要按列表顺序判断设备。先用米家设备名称分别找到“小白智能摄像机”和
+   “小白智能摄像机 2.5K 版”的候选项，再核对每项显示的型号。对候选项分别打开 go2rtc
+   预览，用实际画面对应的房间或视角做最终确认，避免名称重复或设备排序变化时选错摄像头。
+2. 选择“小白智能摄像机”，将流名称固定为 `xiaobai`；选择“小白智能摄像机 2.5K 版”，
+   将流名称固定为 `xiaobai_25k`。后续清单、探测和报告都使用这两个名称，不要互换。
+3. 两路都保留 Web UI 自动生成的完整 `xiaomi://` 源地址，不要手工拼接或改写其中的账号、
+   地区、局域网 IP、DID 或 `model`。只在查询参数中设置 `subtype=sd`：地址已有 `?` 时添加
+   `&subtype=sd`，没有 `?` 时添加 `?subtype=sd`；如果已经有 `subtype` 参数，只修改它的值。
+4. 保存后返回 Streams 页面，逐路打开预览并各观察至少 30 秒。通过要求是画面持续更新，
+   不能只有首帧，也不能持续显示连接错误。
+5. 如果某一路的 `sd` 不能通过 30 秒预览，按 `auto`、`1`、`2` 的顺序逐项尝试。每次只改
+   这一项的 `subtype` 值，保存后重新观察至少 30 秒，不要同时改其他地址参数。选择其中最低且
+   能连续显示的码流，并记录该路最终使用的 `subtype`；不要在清单、issue 或报告中记录完整
+   `xiaomi://` 地址。
+
+保存后的配置结构应类似下面的脱敏示例；尖括号内容只表示占位，不是需要原样填写的值：
+
+```yaml
+xiaomi:
+  "<XIAOMI_ACCOUNT_ID>": <XIAOMI_TOKEN>
+streams:
+  xiaobai:
+    - xiaomi://<REDACTED>?did=<DID>&model=<MODEL>&subtype=<SELECTED_SUBTYPE>
+  xiaobai_25k:
+    - xiaomi://<REDACTED>?did=<DID>&model=<MODEL>&subtype=<SELECTED_SUBTYPE>
+```
+
+实际配置中的账号标识、令牌、DID、局域网 IP 和完整 `xiaomi://` 地址都是家庭隐私数据，
+不得提交到 Git，也不得粘贴到 issue 或报告中。
+
+完成两路预览后，在服务器上确认两个固定名称都已注册：
+
+```bash
+curl --fail --silent --show-error http://127.0.0.1:1984/api/streams
+```
+
+输出必须同时包含 `xiaobai` 和 `xiaobai_25k`。然后使用项目现有的 probe 镜像分别检查两路
+RTSP 输出：
+
+```bash
+docker compose -f compose.poc.yaml --profile tools run --rm --entrypoint ffprobe probe \
+  -v error -select_streams v:0 -show_entries stream=index,codec_type,codec_name,width,height \
+  -of json rtsp://127.0.0.1:8554/xiaobai
+docker compose -f compose.poc.yaml --profile tools run --rm --entrypoint ffprobe probe \
+  -v error -select_streams v:0 -show_entries stream=index,codec_type,codec_name,width,height \
+  -of json rtsp://127.0.0.1:8554/xiaobai_25k
+```
+
+两条命令都必须以退出码 `0` 结束，并且各自输出的 `streams` 数组至少包含一项
+`codec_type` 为 `video` 的流。若 API 输出缺少名称，检查 Web UI 中是否使用了上面的固定名称；
+若名称存在但预览或 ffprobe 没有视频，查看
+`docker compose -f compose.poc.yaml logs --tail=100 go2rtc`，并按上述顺序尝试下一个
+`subtype`。任一路仍未通过时都不要进入第 4 步。
 
 ## 4. 记录设备清单
 
