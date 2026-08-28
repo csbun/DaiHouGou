@@ -2093,7 +2093,7 @@ def test_home_shows_status_and_disabled_rule(tmp_path: Path) -> None:
         response = client.get("/")
 
     assert response.status_code == 200
-    assert "大吼狗" in response.text
+    assert "大口九" in response.text
     assert "人员进入欢迎" in response.text
     assert "摄像头" in response.text
     assert "已关闭" in response.text
@@ -2200,7 +2200,7 @@ def create_app(
         finally:
             await runtime.stop()
 
-    app = FastAPI(title="大吼狗", lifespan=lifespan, docs_url=None, redoc_url=None)
+    app = FastAPI(title="大口九", lifespan=lifespan, docs_url=None, redoc_url=None)
     app.mount("/static", StaticFiles(directory=PACKAGE_DIR / "static"), name="static")
 
     @app.get("/", response_class=HTMLResponse)
@@ -2272,14 +2272,14 @@ def create_app(
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>大吼狗</title>
+    <title>大口九</title>
     <link rel="stylesheet" href="{{ url_for('static', path='/app.css') }}">
   </head>
   <body>
     <header class="topbar">
       <div>
         <p class="eyebrow">家庭陪护</p>
-        <h1>大吼狗</h1>
+        <h1>大口九</h1>
       </div>
       <span class="overall status status-{{ snapshot.overall }}">{{ snapshot.overall }}</span>
     </header>

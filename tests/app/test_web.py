@@ -41,7 +41,8 @@ def test_home_shows_status_and_disabled_rule(tmp_path: Path) -> None:
         response = client.get("/")
 
     assert response.status_code == 200
-    assert "大吼狗" in response.text
+    assert "大口九" in response.text
+    assert "大吼狗" not in response.text
     assert "人员进入欢迎" in response.text
     assert "摄像头" in response.text
     assert "已关闭" in response.text

@@ -40,7 +40,7 @@ def create_app(
         finally:
             await runtime.stop()
 
-    app = FastAPI(title="大吼狗", lifespan=lifespan, docs_url=None, redoc_url=None)
+    app = FastAPI(title="大口九", lifespan=lifespan, docs_url=None, redoc_url=None)
     app.mount("/static", StaticFiles(directory=PACKAGE_DIR / "static"), name="static")
 
     @app.get("/", response_class=HTMLResponse)
