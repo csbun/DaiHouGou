@@ -84,13 +84,18 @@ FFmpeg 工具链和 OpenCV 生态，避免在设备验证之后再更换语言�
 
 接口接受一帧并返回最高人员置信度及检测耗时，不向调用者暴露模型输出张量。
 
-首个适配器使用 `opencv-python-headless` 的 DNN CPU 后端，加载 Open Model Zoo
-`person-detection-0200` FP32 模型。该模型是 256x256 输入的 MobileNetV2-SSD 人员检测器，
-计算量约 0.786 GFLOPs。模型 XML 和 BIN 使用上游固定 URL 获取，并在构建时校验固定摘要。
+首个适配器使用 `opencv-python-headless` 的 DNN CPU 后端，加载 OpenCV Zoo 的
+`person_detection_mediapipe_2023mar.onnx` MPPersonDet 模型。输入帧先由 BGR 转为 RGB、
+转换为浮点数并归一化到 `[-1, 1]`，再按比例缩放并用零补边到 224x224。模型返回 2254 个
+候选框和对应 logit；MVP 只需要是否有人，因此对 logit 执行数值裁剪和 sigmoid 后取最高
+置信度，不做边界框解码或 NMS。
 
-不使用当前 OpenVINO Runtime。OpenVINO 2026.3 的 CPU 插件要求 AVX2，而 i3-3217U 不支持
-AVX2。OpenCV DNN 直接读取 OpenVINO IR 模型，避免这项运行时要求。Intel HD Graphics 4000
-不作为 MVP 推理设备；所有性能结论以 CPU 实测为准。
+模型 URL 固定到 OpenCV Zoo 提交 `47534e27c9851bb1128ccc0102f1145e27f23f98`，构建时校验
+SHA384
+`cdc21e3741c46ae24e4d2fa3c368886bd7dadcd23d98b6acdc0db966d2d9ecc5624c095fa05d5f949cce69ef1029f9ef`。
+此前选择的 Open Model Zoo OpenVINO IR 模型需要 OpenCV wheel 未提供的 OpenVINO plugin，
+不能由目标运行时加载；ONNX 模型直接使用 OpenCV DNN CPU 后端，不依赖 OpenVINO Runtime
+或 AVX2。Intel HD Graphics 4000 不作为 MVP 推理设备；所有性能结论以目标 CPU 实测为准。
 
 默认置信度阈值为 `0.55`，只能通过环境配置修改，不进入管理页。阈值与采样速率会在目标机器
 现场校准，不能把开发机结果视为性能证明。

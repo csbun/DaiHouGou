@@ -34,8 +34,7 @@ class Settings:
     mi_did: str = field(repr=False)
     stream_url: str = "rtsp://127.0.0.1:8554/xiaobai"
     data_dir: Path = Path("/var/lib/daihougou/data")
-    model_xml: Path = Path("/opt/daihougou/models/person-detection-0200.xml")
-    model_bin: Path = Path("/opt/daihougou/models/person-detection-0200.bin")
+    model: Path = Path("/opt/daihougou/models/person_detection_mediapipe_2023mar.onnx")
     detection_fps: float = 1.0
     person_threshold: float = 0.55
     leave_seconds: float = 10.0
@@ -66,11 +65,11 @@ class Settings:
             mi_did=_required(mapping, "MI_DID"),
             stream_url=mapping.get("STREAM_URL", "rtsp://127.0.0.1:8554/xiaobai"),
             data_dir=Path(mapping.get("DATA_DIR", "/var/lib/daihougou/data")),
-            model_xml=Path(
-                mapping.get("MODEL_XML", "/opt/daihougou/models/person-detection-0200.xml")
-            ),
-            model_bin=Path(
-                mapping.get("MODEL_BIN", "/opt/daihougou/models/person-detection-0200.bin")
+            model=Path(
+                mapping.get(
+                    "MODEL",
+                    "/opt/daihougou/models/person_detection_mediapipe_2023mar.onnx",
+                )
             ),
             detection_fps=_positive_float(mapping, "DETECTION_FPS", 1.0),
             person_threshold=person_threshold,

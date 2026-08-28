@@ -177,8 +177,7 @@ class Settings:
     mi_did: str = field(repr=False)
     stream_url: str = "rtsp://127.0.0.1:8554/xiaobai"
     data_dir: Path = Path("/var/lib/daihougou/data")
-    model_xml: Path = Path("/opt/daihougou/models/person-detection-0200.xml")
-    model_bin: Path = Path("/opt/daihougou/models/person-detection-0200.bin")
+    model: Path = Path("/opt/daihougou/models/person_detection_mediapipe_2023mar.onnx")
     detection_fps: float = 1.0
     person_threshold: float = 0.55
     leave_seconds: float = 10.0
@@ -200,8 +199,7 @@ class Settings:
             mi_did=_required(env, "MI_DID"),
             stream_url=env.get("STREAM_URL", cls.stream_url),
             data_dir=Path(env.get("DATA_DIR", str(cls.data_dir))),
-            model_xml=Path(env.get("MODEL_XML", str(cls.model_xml))),
-            model_bin=Path(env.get("MODEL_BIN", str(cls.model_bin))),
+            model=Path(env.get("MODEL", str(cls.model))),
             detection_fps=_positive_float(env, "DETECTION_FPS", "1.0"),
             person_threshold=threshold,
             leave_seconds=_positive_float(env, "LEAVE_SECONDS", "10.0"),
@@ -1470,47 +1468,57 @@ from daihougou.vision.person_detector import PersonDetector
 
 
 class FakeNet:
-    def __init__(self, output: np.ndarray) -> None:
-        self.output = output
+    def __init__(self, outputs: tuple[np.ndarray, np.ndarray]) -> None:
+        self.outputs = outputs
         self.inputs: list[np.ndarray] = []
+        self.requested_outputs: list[tuple[str, ...]] = []
 
     def setInput(self, blob: np.ndarray) -> None:
         self.inputs.append(blob)
 
-    def forward(self) -> np.ndarray:
-        return self.output
+    def getUnconnectedOutLayersNames(self) -> tuple[str, ...]:
+        return ("Identity:0", "Identity_1:0")
+
+    def forward(self, output_names: tuple[str, ...]) -> tuple[np.ndarray, np.ndarray]:
+        self.requested_outputs.append(output_names)
+        return self.outputs
 
 
-def detections(*rows: list[float]) -> np.ndarray:
-    return np.array([[list(rows)]], dtype=np.float32)
+def outputs(*logits: float) -> tuple[np.ndarray, np.ndarray]:
+    boxes = np.zeros((1, len(logits), 12), dtype=np.float32)
+    scores = np.array([[[logit] for logit in logits]], dtype=np.float32)
+    return boxes, scores
 
 
 def test_detector_returns_highest_person_confidence() -> None:
-    net = FakeNet(
-        detections(
-            [0, 0, 0.40, 0, 0, 1, 1],
-            [0, 1, 0.99, 0, 0, 1, 1],
-            [0, 0, 0.72, 0, 0, 1, 1],
-        )
-    )
-    detector = PersonDetector(Path("model.xml"), Path("model.bin"), 0.55, net=net)
+    net = FakeNet(outputs(-1000.0, 1.0, 0.5))
+    detector = PersonDetector(Path("model.onnx"), 0.55, net=net)
+    frame = np.zeros((100, 222, 3), dtype=np.uint8)
+    frame[:, :, 2] = 255
 
-    result = detector.detect(np.zeros((256, 256, 3), dtype=np.uint8))
+    with np.errstate(over="raise"):
+        result = detector.detect(frame)
 
     assert result.person_present is True
-    assert result.confidence == pytest.approx(0.72)
+    assert result.confidence == pytest.approx(1 / (1 + np.exp(-1.0)))
     assert result.latency_ms >= 0
-    assert net.inputs[0].shape == (1, 3, 256, 256)
+    assert net.inputs[0].shape == (1, 3, 224, 224)
+    assert net.inputs[0].dtype == np.float32
+    assert net.inputs[0][0, :, 0, 0] == pytest.approx([0.0, 0.0, 0.0])
+    assert net.inputs[0][0, :, 61, 112] == pytest.approx([0.0, 0.0, 0.0])
+    assert net.inputs[0][0, :, 62, 112] == pytest.approx([1.0, -1.0, -1.0])
+    assert net.inputs[0][0, :, 112, 112] == pytest.approx([1.0, -1.0, -1.0])
+    assert net.requested_outputs == [("Identity:0", "Identity_1:0")]
 
 
 def test_detector_reports_absent_below_threshold() -> None:
-    net = FakeNet(detections([0, 0, 0.54, 0, 0, 1, 1]))
-    detector = PersonDetector(Path("model.xml"), Path("model.bin"), 0.55, net=net)
+    net = FakeNet(outputs(0.1))
+    detector = PersonDetector(Path("model.onnx"), 0.55, net=net)
 
     result = detector.detect(np.zeros((256, 256, 3), dtype=np.uint8))
 
     assert result.person_present is False
-    assert result.confidence == pytest.approx(0.54)
+    assert result.confidence == pytest.approx(1 / (1 + np.exp(-0.1)))
 ```
 
 - [ ] **Step 2: 写 Dockerfile 固定 URL 与摘要策略测试**
@@ -1523,11 +1531,17 @@ from pathlib import Path
 def test_mvp_image_pins_and_verifies_person_model() -> None:
     dockerfile = Path("docker/mvp.Dockerfile").read_text(encoding="utf-8")
 
-    assert "person-detection-0200/FP32/person-detection-0200.xml" in dockerfile
-    assert "person-detection-0200/FP32/person-detection-0200.bin" in dockerfile
+    assert (
+        "https://media.githubusercontent.com/media/opencv/opencv_zoo/"
+        "47534e27c9851bb1128ccc0102f1145e27f23f98/"
+        "models/person_detection_mediapipe/person_detection_mediapipe_2023mar.onnx"
+    ) in dockerfile
     assert "sha384sum --check" in dockerfile
-    assert "c615231e6fc865bd" in dockerfile
-    assert "fdf355324c0603bd" in dockerfile
+    assert (
+        "cdc21e3741c46ae24e4d2fa3c368886bd7dadcd23d98b6acdc0db966d2d9ecc"
+        "5624c095fa05d5f949cce69ef1029f9ef"
+    ) in dockerfile
+    assert "person-detection-0200" not in dockerfile
     assert 'ENTRYPOINT ["daihougou"]' in dockerfile
 ```
 
@@ -1553,7 +1567,12 @@ import numpy.typing as npt
 
 class Network(Protocol):
     def setInput(self, blob: npt.NDArray[np.float32]) -> None: ...
-    def forward(self) -> npt.NDArray[np.float32]: ...
+
+    def getUnconnectedOutLayersNames(self) -> tuple[str, ...]: ...
+
+    def forward(
+        self, output_names: tuple[str, ...]
+    ) -> tuple[npt.NDArray[np.float32], ...]: ...
 
 
 @dataclass(frozen=True)
@@ -1566,34 +1585,45 @@ class PersonDetection:
 class PersonDetector:
     def __init__(
         self,
-        model_xml: Path,
-        model_bin: Path,
+        model: Path,
         threshold: float = 0.55,
         net: Network | None = None,
     ) -> None:
         if not 0 < threshold < 1:
             raise ValueError("threshold must be between 0 and 1")
         self._threshold = threshold
-        self._net = net or cv2.dnn.readNet(str(model_bin), str(model_xml))
+        self._net = net if net is not None else cv2.dnn.readNetFromONNX(str(model))
         if net is None:
             self._net.setPreferableBackend(cv2.dnn.DNN_BACKEND_OPENCV)
             self._net.setPreferableTarget(cv2.dnn.DNN_TARGET_CPU)
+        self._output_names = tuple(self._net.getUnconnectedOutLayersNames())
 
     def detect(self, frame: npt.NDArray[np.uint8]) -> PersonDetection:
         started = time.monotonic()
-        blob = cv2.dnn.blobFromImage(
-            frame,
-            scalefactor=1.0,
-            size=(256, 256),
-            mean=(0, 0, 0),
-            swapRB=False,
-            crop=False,
+        height, width = frame.shape[:2]
+        scale = min(224 / width, 224 / height)
+        resized_width = max(1, int(width * scale))
+        resized_height = max(1, int(height * scale))
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        normalized = rgb.astype(np.float32) / 255.0 * 2.0 - 1.0
+        resized = cv2.resize(normalized, (resized_width, resized_height))
+        horizontal_padding = 224 - resized_width
+        vertical_padding = 224 - resized_height
+        padded = cv2.copyMakeBorder(
+            resized,
+            vertical_padding // 2,
+            vertical_padding - vertical_padding // 2,
+            horizontal_padding // 2,
+            horizontal_padding - horizontal_padding // 2,
+            cv2.BORDER_CONSTANT,
+            value=(0, 0, 0),
         )
+        blob = np.ascontiguousarray(padded.transpose(2, 0, 1)[None])
         self._net.setInput(blob)
-        output = self._net.forward()
-        rows = output.reshape(-1, 7)
-        person_confidences = rows[rows[:, 1] == 0, 2]
-        confidence = float(person_confidences.max()) if person_confidences.size else 0.0
+        outputs = self._net.forward(self._output_names)
+        logits = np.asarray(outputs[1], dtype=np.float64)
+        probabilities = 1.0 / (1.0 + np.exp(-np.clip(logits, -100.0, 100.0)))
+        confidence = float(probabilities.max()) if probabilities.size else 0.0
         return PersonDetection(
             person_present=confidence >= self._threshold,
             confidence=confidence,
@@ -1607,9 +1637,8 @@ class PersonDetector:
 # docker/mvp.Dockerfile
 FROM python:3.12.11-slim-bookworm
 
-ARG MODEL_BASE_URL=https://storage.openvinotoolkit.org/repositories/open_model_zoo/2023.0/models_bin/1/person-detection-0200/FP32
-ARG MODEL_XML_SHA384=c615231e6fc865bd875e95c283d115e9ee9742ef02910b8752fe4b60724b1b5e198ed564ade0372109cd7abe9eed43ae
-ARG MODEL_BIN_SHA384=fdf355324c0603bd6e917067fe07581792fa48aeb5f47a031f3ed2773c541051712a3e2bf03cc681baa9ad6900d9f147
+ARG MODEL_URL=https://media.githubusercontent.com/media/opencv/opencv_zoo/47534e27c9851bb1128ccc0102f1145e27f23f98/models/person_detection_mediapipe/person_detection_mediapipe_2023mar.onnx
+ARG MODEL_SHA384=cdc21e3741c46ae24e4d2fa3c368886bd7dadcd23d98b6acdc0db966d2d9ecc5624c095fa05d5f949cce69ef1029f9ef
 
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends ca-certificates curl ffmpeg \
@@ -1623,22 +1652,18 @@ RUN pip install --no-cache-dir .
 
 RUN mkdir -p /opt/daihougou/models \
     && curl --fail --silent --show-error --location \
-      "$MODEL_BASE_URL/person-detection-0200.xml" \
-      --output /opt/daihougou/models/person-detection-0200.xml \
-    && curl --fail --silent --show-error --location \
-      "$MODEL_BASE_URL/person-detection-0200.bin" \
-      --output /opt/daihougou/models/person-detection-0200.bin \
+      "$MODEL_URL" \
+      --output /opt/daihougou/models/person_detection_mediapipe_2023mar.onnx \
     && cd /opt/daihougou/models \
-    && printf '%s  %s\n' "$MODEL_XML_SHA384" person-detection-0200.xml \
-      | sha384sum --check \
-    && printf '%s  %s\n' "$MODEL_BIN_SHA384" person-detection-0200.bin \
+    && printf '%s  %s\n' "$MODEL_SHA384" person_detection_mediapipe_2023mar.onnx \
       | sha384sum --check
 
 ENTRYPOINT ["daihougou"]
 ```
 
-模型来源固定为 Open Model Zoo 2023.0 官方存储；摘要来自该模型官方 `model.yml`。不安装
-OpenVINO Runtime，因为目标 i3-3217U 不支持当前 CPU 插件要求的 AVX2。
+模型来源固定为 OpenCV Zoo 提交 `47534e27c9851bb1128ccc0102f1145e27f23f98`，并校验
+SHA384 摘要。使用 ONNX 是因为 `opencv-python-headless` 不包含加载 OpenVINO IR 所需的
+OpenVINO plugin；该 ONNX 模型直接使用 OpenCV DNN CPU 后端，不需要 OpenVINO Runtime。
 
 - [ ] **Step 6: 运行单元测试**
 
@@ -1650,7 +1675,7 @@ Expected: `3 passed`。
 
 Run: `docker build -f docker/mvp.Dockerfile -t daihougou-mvp:test .`
 
-Expected: 构建中的两个 `sha384sum` 都输出 `OK`，最终退出码为 `0`。
+Expected: 构建中的 `sha384sum` 输出 `OK`，最终退出码为 `0`。
 
 Run:
 
@@ -1660,8 +1685,7 @@ from pathlib import Path
 import numpy as np
 from daihougou.vision.person_detector import PersonDetector
 detector = PersonDetector(
-    Path("/opt/daihougou/models/person-detection-0200.xml"),
-    Path("/opt/daihougou/models/person-detection-0200.bin"),
+    Path("/opt/daihougou/models/person_detection_mediapipe_2023mar.onnx"),
 )
 result = detector.detect(np.zeros((256, 256, 3), dtype=np.uint8))
 print("model-inference-ok", result.person_present, result.latency_ms)
@@ -1673,7 +1697,12 @@ Expected: 输出以 `model-inference-ok False` 开头，退出码为 `0`。
 - [ ] **Step 8: 提交**
 
 ```bash
-git add docker/mvp.Dockerfile src/daihougou/vision/person_detector.py tests/app
+git add docker/mvp.Dockerfile \
+  src/daihougou/vision/person_detector.py \
+  tests/app/test_mvp_dockerfile.py \
+  tests/app/vision/test_person_detector.py \
+  docs/superpowers/specs/2026-08-28-person-welcome-mvp-design.md \
+  docs/superpowers/plans/2026-08-28-person-welcome-mvp.md
 git commit -m "feat: detect people with pinned opencv model"
 ```
 
@@ -2469,7 +2498,7 @@ def create_production_app(settings: Settings | None = None) -> FastAPI:
     )
     runtime = Runtime(
         FfmpegFrameSource(resolved.stream_url, resolved.detection_fps),
-        PersonDetector(resolved.model_xml, resolved.model_bin, resolved.person_threshold),
+        PersonDetector(resolved.model, resolved.person_threshold),
         PresenceTracker(resolved.leave_seconds),
         WelcomeRule(storage, resolved.welcome_cooldown_seconds),
         speaker_worker,
@@ -2519,8 +2548,7 @@ MI_PASS=
 MI_DID=
 STREAM_URL=rtsp://127.0.0.1:8554/xiaobai
 DATA_DIR=/var/lib/daihougou/data
-MODEL_XML=/opt/daihougou/models/person-detection-0200.xml
-MODEL_BIN=/opt/daihougou/models/person-detection-0200.bin
+MODEL=/opt/daihougou/models/person_detection_mediapipe_2023mar.onnx
 DETECTION_FPS=1.0
 PERSON_THRESHOLD=0.55
 LEAVE_SECONDS=10.0
@@ -3033,7 +3061,7 @@ Expected: 无输出。若前面的验证失败，不执行本步骤；回到拥�
 ## 完成定义
 
 - 所有自动测试、Ruff、两个 Docker 构建和 Compose 解析通过。
-- 真实模型在目标 CPU 镜像中可加载，不依赖 AVX2 OpenVINO Runtime。
+- 真实 ONNX 模型在目标 CPU 镜像中可加载，只使用 OpenCV DNN CPU 后端且不依赖 OpenVINO。
 - `xiaobai` 只保留最新帧，断线自动退避恢复，错误帧不推动“离开”状态。
 - 欢迎规则默认关闭；开启后只在稳定的 `absent -> present` 且冷却结束时产生动作。
 - 音箱调用不阻塞检测循环，执行前再次检查开关，OTP 失效只产生脱敏的

@@ -12,10 +12,19 @@ def test_settings_from_mapping_defaults() -> None:
 
     assert settings.stream_url == "rtsp://127.0.0.1:8554/xiaobai"
     assert settings.data_dir == Path("/var/lib/daihougou/data")
+    assert settings.model == Path(
+        "/opt/daihougou/models/person_detection_mediapipe_2023mar.onnx"
+    )
     assert settings.detection_fps == 1.0
     assert settings.person_threshold == 0.55
     assert settings.web_port == 8080
     assert "secret" not in repr(settings)
+
+
+def test_settings_accepts_custom_onnx_model_path() -> None:
+    settings = Settings.from_mapping({**BASE_ENV, "MODEL": "/models/person.onnx"})
+
+    assert settings.model == Path("/models/person.onnx")
 
 
 @pytest.mark.parametrize(
