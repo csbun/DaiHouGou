@@ -2446,7 +2446,7 @@ def test_compose_runs_one_app_with_persistent_data_and_miservice_home() -> None:
     assert "./deploy/app/state:/var/lib/daihougou/data" in compose
     assert "./deploy/miservice/state:/var/lib/daihougou/mi" in compose
     assert "HOME: /var/lib/daihougou/mi" in compose
-    assert "python -m daihougou.healthcheck" in compose
+    assert 'test: ["CMD", "python", "-m", "daihougou.healthcheck"]' in compose
     assert "--workers" not in compose
     assert "--reload" not in compose
 

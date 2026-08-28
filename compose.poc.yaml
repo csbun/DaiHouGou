@@ -7,6 +7,31 @@ services:
     volumes:
       - ./deploy/go2rtc/state:/config
 
+  app:
+    build:
+      context: .
+      dockerfile: docker/mvp.Dockerfile
+    image: daihougou-mvp:local
+    container_name: daihougou-app
+    network_mode: host
+    restart: unless-stopped
+    depends_on:
+      go2rtc:
+        condition: service_started
+    env_file: .env.mvp
+    environment:
+      HOME: /var/lib/daihougou/mi
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - ./deploy/app/state:/var/lib/daihougou/data
+      - ./deploy/miservice/state:/var/lib/daihougou/mi
+    healthcheck:
+      test: ["CMD", "python", "-m", "daihougou.healthcheck"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 45s
+
   probe:
     build:
       context: .
