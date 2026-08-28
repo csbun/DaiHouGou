@@ -461,7 +461,6 @@ services:
     restart: unless-stopped
     volumes:
       - ./deploy/go2rtc/state:/config
-    command: ["-c", "/config/go2rtc.yaml"]
 
   probe:
     build:

@@ -4,6 +4,22 @@
 必须处于同一个可信局域网内。不要通过路由器将 go2rtc 的 1984 端口或 RTSP 的 8554 端口
 暴露到局域网之外。
 
+## 运行模式
+
+音箱支持两条互相独立的路径：
+
+- `direct`：不经过 Home Assistant，由探测容器直接调用 MiService 的 MIoT action。
+- `ha`：通过 Home Assistant 的 REST API 调用小米集成。
+
+Home Assistant 是可选的。只使用 `direct` 时，跳过第 7 步，不要启动 `homeassistant`，
+第 8 步只运行直连小节，`.env.poc` 中的 `HA_*` 无需填写或修改，保留示例默认值即可。
+最终验收报告中 HA 显示
+`NOT RUN` 不影响选择 `CONTINUE_GO2RTC_DIRECT`。
+
+本手册中的“直连”表示不经过 HA，并不表示完全的局域网本地控制。当前实现通过
+`MI_USER`、`MI_PASS` 和 `MI_DID` 调用 MiService，仍需要互联网访问小米服务；应用尚未接入
+MiService 的 `MI_LOCAL=<IP>:<Token>` UDP 本地模式。
+
 ## 1. 检查服务器
 
 要求 Docker Engine 23 或更高版本、Docker Compose v2，以及至少 10 GB 可用磁盘空间。
@@ -21,10 +37,11 @@ cp .env.poc.example .env.poc
 chmod 600 .env.poc
 ```
 
-在服务器本地填写 `.env.poc` 中的小米账号信息和可选的 Home Assistant 密钥。不要提交此
-文件，也不要把其内容粘贴到 issue 或报告中。每次完整 PoC 开始前，为 `POC_CAMPAIGN_ID`
-换一个新的唯一标识符；在生成 `gate.md` 前不要修改它。除非同步修改 Compose 的挂载配置，
-否则保持 `POC_INVENTORY_PATH=/workspace/config/poc-devices.json` 不变。
+在服务器本地填写 `.env.poc`。使用 `direct` 路径时，必须填写 `MI_USER`、`MI_PASS` 和
+`MI_DID`；使用 `ha` 路径时，填写第 7 步找到的 `HA_*` 值。不要提交此文件，也不要把其
+内容粘贴到 issue 或报告中。每次完整 PoC 开始前，为 `POC_CAMPAIGN_ID` 换一个新的唯一
+标识符；在生成 `gate.md` 前不要修改它。除非同步修改 Compose 的挂载配置，否则保持
+`POC_INVENTORY_PATH=/workspace/config/poc-devices.json` 不变。
 
 ## 3. 启动 go2rtc 并配置两台摄像头
 
@@ -33,6 +50,18 @@ mkdir -p deploy/go2rtc/state
 cp deploy/go2rtc/go2rtc.example.yaml deploy/go2rtc/state/go2rtc.yaml
 docker compose -f compose.poc.yaml up -d go2rtc
 ```
+
+确认容器状态为 `running`，启动日志显示读取 `/config/go2rtc.yaml`，并且 API 在服务器本机
+可访问：
+
+```bash
+docker compose -f compose.poc.yaml ps go2rtc
+docker compose -f compose.poc.yaml logs --tail=20 go2rtc
+curl --fail --show-error http://127.0.0.1:1984/api
+```
+
+如果状态为 `restarting` 或 `exited`，不要继续配置摄像头。先根据日志解决启动错误；正常日志
+应包含 `config path=/config/go2rtc.yaml` 和 `[api] listen addr=127.0.0.1:1984`。
 
 在另一台电脑上创建 SSH 隧道，然后访问 `http://127.0.0.1:1984`：
 
@@ -96,7 +125,9 @@ docker compose -f compose.poc.yaml --profile tools run --rm probe camera wait \
 
 两条解码命令都必须完成，且恢复必须在 60 秒内完成。
 
-## 7. 配置临时 Home Assistant 路径
+## 7. （可选）配置临时 Home Assistant 路径
+
+选择 `direct` 路径时跳过本节。只有需要验证 HA 路径时才执行以下步骤。
 
 ```bash
 mkdir -p deploy/homeassistant/state
@@ -121,23 +152,67 @@ docker compose -f compose.poc.yaml --profile tools run --rm probe speaker valida
 确认参数表示操作者的现场确认。只有在 `.env.poc` 中确实填入专用非管理员用户令牌时，才可
 使用此参数。
 
-## 8. 运行并标注两条音箱路径各 30 次试播
+## 8. 运行并标注音箱路径各 30 次试播
 
 每次试播都必须由成年人现场聆听。API 接受请求不等于音箱实际播放并被听见。
+
+### 8.1 直连路径（不需要 Home Assistant）
+
+先确认探测镜像可用：
+
+```bash
+docker compose -f compose.poc.yaml --profile tools build probe
+```
+
+使用同一个小米账号查询设备列表：
+
+```bash
+docker compose -f compose.poc.yaml --profile tools run --rm \
+  --entrypoint python probe -m miservice list
+```
+
+在输出中找到“小米小爱音箱 Play 增强版”，确认型号为 `xiaomi.wifispeaker.l05c`，将其
+对应的数值 DID 填入 `.env.poc` 的 `MI_DID`。输出可能包含令牌等敏感信息，不要保存、
+提交或粘贴到报告中。也可以用以下命令查看该型号的 MIoT 能力：
+
+```bash
+docker compose -f compose.poc.yaml --profile tools run --rm \
+  --entrypoint python probe -m miservice spec xiaomi.wifispeaker.l05c text
+```
+
+先执行一次单次播报，确认返回的 JSON 中 `code` 为 `0`，并且成年人实际听到音箱发声：
+
+```bash
+docker compose -f compose.poc.yaml --profile tools run --rm \
+  --entrypoint python probe -m miservice action \
+  '{"did":"MI_DID_VALUE","siid":5,"aiid":3,"in":["这是直连测试"]}'
+```
+
+当前 PoC 对 L05C 固定使用 `siid=5`、`aiid=3`。如果 API 返回成功但音箱没有声音，必须将
+该次记为未听见，不得仅凭 `code=0` 判定通过。
 
 ```bash
 docker compose -f compose.poc.yaml --profile tools run --rm probe speaker run --backend direct --count 30 --interval-seconds 8
 docker compose -f compose.poc.yaml --profile tools run --rm probe speaker annotate --run-id DIRECT_RUN_ID --count 30 --missed '2,7'
-docker compose -f compose.poc.yaml --profile tools run --rm probe speaker run --backend ha --count 30 --interval-seconds 8
-docker compose -f compose.poc.yaml --profile tools run --rm probe speaker annotate --run-id HA_RUN_ID --count 30 --missed ''
 ```
 
 将示例中的未听见编号替换为实际未听见的试播编号。
 
+### 8.2 Home Assistant 路径（可选）
+
+只有完成第 7 步并决定验证 HA 时才运行以下命令：
+
+```bash
+docker compose -f compose.poc.yaml --profile tools run --rm probe speaker run --backend ha --count 30 --interval-seconds 8
+docker compose -f compose.poc.yaml --profile tools run --rm probe speaker annotate --run-id HA_RUN_ID --count 30 --missed ''
+```
+
+如果只验证直连路径，不要运行 `--backend ha`，也不需要填写 `HA_*`。
+
 ## 9. 停止测试失败的音箱路径
 
-一条路径只有同时满足 30/30 次 API 接受和至少 29/30 次现场听见，才通过第一道验收。
-不要为失败的路径运行扩展测试。如果两条路径都失败，请保留产物并停止 PoC。
+一条已运行的路径只有同时满足 30/30 次 API 接受和至少 29/30 次现场听见，才通过第一道
+验收。不要为失败的路径运行扩展测试。如果所有已选择的路径都失败，请保留产物并停止 PoC。
 
 ## 10. 为通过的路径运行并标注 100 次试播
 
