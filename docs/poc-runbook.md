@@ -35,13 +35,81 @@ df -h .
 ```bash
 cp .env.poc.example .env.poc
 chmod 600 .env.poc
+poc_campaign_id="poc-$(date +%Y%m%d-%H%M%S)"
+sed -i "s/^POC_CAMPAIGN_ID=.*/POC_CAMPAIGN_ID=${poc_campaign_id}/" .env.poc
+grep '^POC_CAMPAIGN_ID=' .env.poc
 ```
 
-在服务器本地填写 `.env.poc`。使用 `direct` 路径时，必须填写 `MI_USER`、`MI_PASS` 和
-`MI_DID`；使用 `ha` 路径时，填写第 7 步找到的 `HA_*` 值。不要提交此文件，也不要把其
-内容粘贴到 issue 或报告中。每次完整 PoC 开始前，为 `POC_CAMPAIGN_ID` 换一个新的唯一
-标识符；在生成 `gate.md` 前不要修改它。除非同步修改 Compose 的挂载配置，否则保持
-`POC_INVENTORY_PATH=/workspace/config/poc-devices.json` 不变。
+在服务器本地填写 `.env.poc`。使用 `direct` 路径时，运行音箱探测前最终必须填写
+`MI_USER`、`MI_PASS` 和 `MI_DID`，其中 `MI_DID` 按本节下文先查询再回填；使用 `ha`
+路径时，填写第 7 步找到的 `HA_*` 值。不要提交此文件，也不要把其内容粘贴到 issue 或报告
+中。上面的命令会将示例占位值替换为当前 PoC 的唯一标识符；允许
+格式为 3–64 位，以字母或数字开头，后续只能包含字母、数字、点、下划线或连字符。如果保留
+`replace-with-a-unique-poc-run-id`，probe 会在连接设备前报错
+`POC_CAMPAIGN_ID must be a unique 3-64 character identifier`。
+
+每次开始新的完整 PoC 时都生成一个新的 `POC_CAMPAIGN_ID`；同一轮 PoC 从首次探测到生成
+`gate.md` 必须始终使用同一个值，否则已采集证据无法归入同一次测试。除非同步修改 Compose
+的挂载配置，否则保持 `POC_INVENTORY_PATH=/workspace/config/poc-devices.json` 不变。
+
+选择 `direct` 路径时，先在 `.env.poc` 中填写拥有目标音箱的同一个小米账号 `MI_USER` 和
+`MI_PASS`，暂时保留 `MI_DID=` 为空。构建探测镜像并查询该账号下的设备：
+
+```bash
+docker compose -f compose.poc.yaml --profile tools build probe
+docker compose -f compose.poc.yaml --profile tools run --rm \
+  --entrypoint python probe -m miservice list
+```
+
+在输出中同时按设备名称“小米小爱音箱 Play 增强版”和型号
+`xiaomi.wifispeaker.l05c` 定位目标音箱，将该条目的数值 `did` 填入 `.env.poc`：
+
+```dotenv
+MI_DID=<音箱条目的数值 did>
+```
+
+这里需要的是 MIoT 设备列表中的 `did`。不要填写摄像头 DID、MiNA 列表中的 `deviceID`、
+局域网 IP、MAC 地址或型号字符串；设备名称可能重复，也不建议用名称代替数值 DID。列表
+输出可能包含设备令牌及其他家庭隐私数据，不要保存、提交或粘贴完整输出。只检查已回填的
+这一行，不要输出 `.env.poc` 的其他内容：
+
+```bash
+grep '^MI_DID=' .env.poc
+```
+
+如果 `miservice list` 返回 `code: 70016` 和“登录验证失败”，说明请求已经到达小米账号服务，
+但账号口令在 `serviceLoginAuth2` 阶段被拒绝；此错误发生在设备列表查询和 OTP 验证之前，
+与 `MI_DID`、摄像头及 go2rtc 无关。先停止重复尝试，再用下面的命令确认 Compose 传入的值
+是否存在、长度是否符合预期，以及是否意外带有首尾空格。该命令不会输出账号或密码正文：
+
+```bash
+docker compose -f compose.poc.yaml --profile tools run --rm \
+  --entrypoint python probe -c '
+import os
+for key in ("MI_USER", "MI_PASS"):
+    value = os.environ.get(key, "")
+    print("{}: set={} len={} trimmed={}".format(
+        key, bool(value), len(value), value == value.strip()
+    ))
+'
+```
+
+如果 `set=False`、长度与实际值不符或 `trimmed=False`，先修正 `.env.poc`。Compose 会对未加
+引号和双引号中的 `$变量` 做插值；账号或密码含 `$`、`#`、空格等字符时，使用单引号保留
+字面值：
+
+```dotenv
+MI_USER='实际账号'
+MI_PASS='实际密码'
+```
+
+如果值中本身含单引号，在单引号值中写成 `\'`。修正后重新执行上面的无泄密检查。确认
+容器收到的长度正确后，在浏览器打开 `https://account.xiaomi.com/`，使用同一个登录标识和
+密码完成一次密码登录及可能出现的安全验证；`MI_USER` 应使用这次成功登录的标识。浏览器
+也拒绝时，先在小米账号页面解决凭据问题。浏览器成功但 `miservice list` 仍返回 `70016`
+时，不要连续重试；记录上面检查命令的四个非敏感结果，并继续排查账号认证兼容性。小米
+后续还可能返回 `70022` 限流，重复登录只会扩大问题。原始异常会显示账号，反馈日志前先
+将账号、Token、DID 等信息替换为 `<REDACTED>`。
 
 ## 3. 启动 go2rtc 并配置两台摄像头
 
@@ -112,18 +180,36 @@ RTSP 输出：
 
 ```bash
 docker compose -f compose.poc.yaml --profile tools run --rm --entrypoint ffprobe probe \
-  -v error -select_streams v:0 -show_entries stream=index,codec_type,codec_name,width,height \
+  -v error -rtsp_transport tcp -select_streams v:0 \
+  -show_entries stream=index,codec_type,codec_name,width,height \
   -of json rtsp://127.0.0.1:8554/xiaobai
 docker compose -f compose.poc.yaml --profile tools run --rm --entrypoint ffprobe probe \
-  -v error -select_streams v:0 -show_entries stream=index,codec_type,codec_name,width,height \
+  -v error -rtsp_transport tcp -select_streams v:0 \
+  -show_entries stream=index,codec_type,codec_name,width,height \
   -of json rtsp://127.0.0.1:8554/xiaobai_25k
 ```
 
 两条命令都必须以退出码 `0` 结束，并且各自输出的 `streams` 数组至少包含一项
-`codec_type` 为 `video` 的流。若 API 输出缺少名称，检查 Web UI 中是否使用了上面的固定名称；
-若名称存在但预览或 ffprobe 没有视频，查看
-`docker compose -f compose.poc.yaml logs --tail=100 go2rtc`，并按上述顺序尝试下一个
-`subtype`。任一路仍未通过时都不要进入第 4 步。
+`codec_type` 为 `video` 的流。这里的 `-rtsp_transport tcp` 只控制 ffprobe 到 go2rtc 的
+RTSP 连接；它与 `xiaomi://` 源地址中控制摄像头到 go2rtc 的 `transport` 参数不是同一层。
+如果遗漏该选项，ffprobe 可能先尝试 go2rtc 不支持的 UDP RTSP 传输并显示
+`461 Unsupported transport`。不要仅因为这个 `461` 就修改小米源地址。
+
+若 API 输出缺少名称，检查 Web UI 中是否使用了上面的固定名称。若名称存在，但预览或
+ffprobe 返回 `404 Not Found`，先用只请求视频的 API 调用获取 Xiaomi 层的真实错误：
+
+```bash
+curl --max-time 45 --silent --show-error \
+  --write-out '\nHTTP %{http_code}\n' \
+  'http://127.0.0.1:1984/api/streams?src=xiaobai&video'
+```
+
+若返回类似 `xiaomi: probe: miss: read media: cs2: read udp ... i/o timeout`，首先确认摄像头
+已通电、已开机，并且在米家 App 中显示在线；摄像头关闭时，go2rtc 仍可能完成账号鉴权和
+设备发现，但无法收到媒体数据。打开摄像头后保持原配置不变，重新执行 API 和 ffprobe
+验证。只有设备确认在线后仍然超时，才查看
+`docker compose -f compose.poc.yaml logs --tail=100 go2rtc`，并按上述顺序逐项尝试其他
+`subtype`；不要同时修改 `subtype` 和 `transport`。任一路仍未通过时都不要进入第 4 步。
 
 ## 4. 记录设备清单
 
@@ -143,7 +229,7 @@ cp config/poc-devices.example.json config/poc-devices.json
 | 摄像头 `firmware` | 在米家 App 中分别进入设备卡片，打开右上角菜单，在“固件更新”或“固件升级”页面记录当前已安装版本。菜单名称可能随 App 或设备插件版本略有不同。 |
 | 摄像头 `ip` | 优先从路由器的 DHCP 客户端或已连接设备列表中，按设备名称和 MAC 地址核对后记录；也可以只查看 go2rtc 自动生成源地址中 `@` 之后、`?` 之前的局域网 IP。记录本次 PoC 开始时实际使用的地址。 |
 | 摄像头 `codec` | 使用第 3 步最终选定的 `subtype` 运行 `ffprobe`，将视频流的 `codec_name` 原样填写，例如 `h264` 或 `hevc`。不要根据产品宣传或米家中的编码开关推测。 |
-| 音箱 `miot_model` | 模板已按目标“小米小爱音箱 Play 增强版”预填 `xiaomi.wifispeaker.l05c`。先在米家设备信息中核对，随后用第 8.1 节的 `miservice list` 再确认。 |
+| 音箱 `miot_model` | 模板已按目标“小米小爱音箱 Play 增强版”预填 `xiaomi.wifispeaker.l05c`。先在米家设备信息中核对，随后用第 2 步的 `miservice list` 再确认。 |
 | 音箱 `firmware` | 在米家或小爱音箱 App 的设备设置、设备信息或固件升级页面记录当前已安装版本。 |
 
 `miservice list` 的完整输出，以及完整的 `xiaomi://` 源地址，可能包含令牌、DID、账号标识
@@ -158,10 +244,18 @@ cp config/poc-devices.example.json config/poc-devices.json
 
 ```bash
 docker build -f docker/poc.Dockerfile -t daihougou-poc:test .
-docker run --rm --entrypoint pytest daihougou-poc:test -q
+docker run --rm \
+  --mount type=bind,source="$PWD/.dockerignore",target=/workspace/.dockerignore,readonly \
+  --mount type=bind,source="$PWD/compose.poc.yaml",target=/workspace/compose.poc.yaml,readonly \
+  --entrypoint pytest daihougou-poc:test -q
 docker run --rm --entrypoint ruff daihougou-poc:test check src tests
 docker compose -f compose.poc.yaml config --quiet
 ```
+
+完整 pytest 中有两个仓库策略测试会读取仓库根目录的 `.dockerignore` 和
+`compose.poc.yaml`。测试镜像不会复制这两个部署文件，因此必须按上面的命令从当前仓库
+只读挂载；直接运行不带 `--mount` 的 pytest 会得到两个 `FileNotFoundError`，这不表示业务
+代码测试失败。通过时应显示 `33 passed`。
 
 ## 6. 运行摄像头 30 分钟稳定性和恢复测试
 
@@ -225,22 +319,19 @@ docker compose -f compose.poc.yaml --profile tools run --rm probe speaker valida
 
 ### 8.1 直连路径（不需要 Home Assistant）
 
-先确认探测镜像可用：
+先确认第 2 步已经从 MIoT 设备列表取得 L05C 的数值 `did`，并写入 `.env.poc` 的
+`MI_DID`。如果需要复核设备身份，可以重新构建探测镜像并查询列表：
 
 ```bash
 docker compose -f compose.poc.yaml --profile tools build probe
 ```
-
-使用同一个小米账号查询设备列表：
 
 ```bash
 docker compose -f compose.poc.yaml --profile tools run --rm \
   --entrypoint python probe -m miservice list
 ```
 
-在输出中找到“小米小爱音箱 Play 增强版”，确认型号为 `xiaomi.wifispeaker.l05c`，将其
-对应的数值 DID 填入 `.env.poc` 的 `MI_DID`。输出可能包含令牌等敏感信息，不要保存、
-提交或粘贴到报告中。也可以用以下命令查看该型号的 MIoT 能力：
+输出的保密要求与第 2 步相同。然后可以用以下命令查看该型号的 MIoT 能力：
 
 ```bash
 docker compose -f compose.poc.yaml --profile tools run --rm \
