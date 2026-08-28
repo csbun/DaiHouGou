@@ -90,7 +90,7 @@ Web UI 检查流名称是否完全一致；如果名称存在但没有视频，�
 ```bash
 awk '/^```/{n++} END{print "code_fence_count=" n; exit(n % 2)}' docs/poc-runbook.md
 git diff --check
-rg -n 'xiaomi://[^<]|V1:|did=[0-9]|@(10\.|192\.168\.|172\.)' docs/poc-runbook.md
+rg -n 'xiaomi://[A-Za-z0-9]|V1:|did=[0-9]|@(10\.|192\.168\.|172\.)' docs/poc-runbook.md
 git diff -- docs/poc-runbook.md
 ```
 

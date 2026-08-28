@@ -90,12 +90,12 @@ ssh -L 1984:127.0.0.1:1984 SERVER_USER@SERVER_IP
 
 ```yaml
 xiaomi:
-  "<XIAOMI_ACCOUNT_ID>": <XIAOMI_TOKEN>
+  "<REDACTED_ACCOUNT_ID>": "<REDACTED_TOKEN>"
 streams:
   xiaobai:
-    - xiaomi://<REDACTED>?did=<DID>&model=<MODEL>&subtype=<SELECTED_SUBTYPE>
+    - xiaomi://<REDACTED>?did=<REDACTED_DID>&model=<REDACTED_MODEL>&subtype=<SELECTED_SUBTYPE>
   xiaobai_25k:
-    - xiaomi://<REDACTED>?did=<DID>&model=<MODEL>&subtype=<SELECTED_SUBTYPE>
+    - xiaomi://<REDACTED>?did=<REDACTED_DID>&model=<REDACTED_MODEL>&subtype=<SELECTED_SUBTYPE>
 ```
 
 实际配置中的账号标识、令牌、DID、局域网 IP 和完整 `xiaomi://` 地址都是家庭隐私数据，
