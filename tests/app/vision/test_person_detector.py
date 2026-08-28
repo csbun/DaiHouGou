@@ -23,14 +23,14 @@ class FakeNet:
         return self.outputs
 
 
-def outputs(*logits: float) -> tuple[np.ndarray, np.ndarray]:
+def model_outputs(*logits: float) -> tuple[np.ndarray, np.ndarray]:
     boxes = np.zeros((1, len(logits), 12), dtype=np.float32)
     scores = np.array([[[logit] for logit in logits]], dtype=np.float32)
     return boxes, scores
 
 
 def test_detector_returns_highest_person_confidence() -> None:
-    net = FakeNet(outputs(-1000.0, 1.0, 0.5))
+    net = FakeNet(model_outputs(-1000.0, 1.0, 0.5))
     detector = PersonDetector(Path("model.onnx"), 0.55, net=net)
     frame = np.zeros((100, 222, 3), dtype=np.uint8)
     frame[:, :, 2] = 255
@@ -51,7 +51,7 @@ def test_detector_returns_highest_person_confidence() -> None:
 
 
 def test_detector_reports_absent_below_threshold() -> None:
-    net = FakeNet(outputs(0.1))
+    net = FakeNet(model_outputs(0.1))
     detector = PersonDetector(Path("model.onnx"), 0.55, net=net)
 
     result = detector.detect(np.zeros((256, 256, 3), dtype=np.uint8))

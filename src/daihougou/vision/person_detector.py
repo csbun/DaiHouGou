@@ -63,8 +63,8 @@ class PersonDetector:
         )
         blob = np.ascontiguousarray(padded.transpose(2, 0, 1)[None])
         self._net.setInput(blob)
-        outputs = self._net.forward(self._output_names)
-        logits = np.asarray(outputs[1], dtype=np.float64)
+        _, score_logits = self._net.forward(self._output_names)
+        logits = np.asarray(score_logits, dtype=np.float64)
         probabilities = 1.0 / (1.0 + np.exp(-np.clip(logits, -100.0, 100.0)))
         confidence = float(probabilities.max()) if probabilities.size else 0.0
         return PersonDetection(
