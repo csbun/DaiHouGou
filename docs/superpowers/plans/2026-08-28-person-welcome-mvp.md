@@ -2663,6 +2663,8 @@ Expected: FAIL，生产镜像当前没有测试文件和 dev 依赖。
 
 ```dockerfile
 COPY pyproject.toml ./
+COPY .dockerignore compose.poc.yaml .env.mvp.example ./
+COPY docker ./docker
 COPY src ./src
 COPY tests ./tests
 RUN pip install --no-cache-dir '.[dev]'
@@ -3045,7 +3047,7 @@ Run:
 
 ```bash
 git status --short
-git ls-files | rg '(^|/)(\.env\.mvp|\.mi\.token|daihougou\.db|deploy/(app|miservice)/state)'
+git ls-files | rg '(^|/)(\.env\.mvp$|\.mi\.token$|daihougou\.db$|deploy/(app|miservice)/state/)'
 ```
 
 Expected: 第二条命令无输出；第一条只显示有意修改且准备提交的源代码、测试或文档。

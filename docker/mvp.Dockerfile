@@ -10,8 +10,11 @@ RUN apt-get update \
 WORKDIR /workspace
 
 COPY pyproject.toml ./
+COPY .dockerignore compose.poc.yaml .env.mvp.example ./
+COPY docker ./docker
 COPY src ./src
-RUN pip install --no-cache-dir .
+COPY tests ./tests
+RUN pip install --no-cache-dir '.[dev]'
 
 RUN mkdir -p /opt/daihougou/models \
     && curl --fail --silent --show-error --location \

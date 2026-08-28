@@ -1,4 +1,8 @@
-# 设备兼容性 PoC 运行手册
+# 设备兼容性 PoC 与 MVP 运行手册
+
+> 本手册同时覆盖设备兼容性 PoC 和首个“人员进入欢迎”MVP。PoC 的 30 分钟摄像头与
+> 30 次音箱稳定性步骤仍可稍后执行；已经确认 `xiaobai` 拉流和 L05C 直连播报可用时，
+> 可以先按第 14 节启动 MVP。扩大日常使用范围前仍须补完第 6、8、10 和 11 节的稳定性验收。
 
 请在目标 Debian 系服务器上运行本 PoC，不要在开发电脑上运行。服务器和所有小米设备
 必须处于同一个可信局域网内。不要通过路由器将 go2rtc 的 1984 端口或 RTSP 的 8554 端口
@@ -111,7 +115,7 @@ MI_PASS='实际密码'
 后续还可能返回 `70022` 限流，重复登录只会扩大问题。原始异常会显示账号，反馈日志前先
 将账号、Token、DID 等信息替换为 `<REDACTED>`。
 
-## 3. 启动 go2rtc 并配置两台摄像头
+## 3. 启动 go2rtc 并配置摄像头
 
 ```bash
 mkdir -p deploy/go2rtc/state
@@ -136,6 +140,9 @@ curl --fail --show-error http://127.0.0.1:1984/api
 ```bash
 ssh -L 1984:127.0.0.1:1984 SERVER_USER@SERVER_IP
 ```
+
+当前 MVP 只要求流名称为 `xiaobai` 的一台摄像头。如果现在只接入一台摄像头，下面所有
+`xiaobai_25k` 操作都可以跳过，不会阻塞第 14 节。两台摄像头内容保留用于后续完整 PoC。
 
 以下操作从小米账号已登录并显示摄像头列表开始：
 
@@ -169,14 +176,16 @@ streams:
 实际配置中的账号标识、令牌、DID、局域网 IP 和完整 `xiaomi://` 地址都是家庭隐私数据，
 不得提交到 Git，也不得粘贴到 issue 或报告中。
 
-完成两路预览后，在服务器上确认两个固定名称都已注册：
+完整双摄像头 PoC 在完成两路预览后，应在服务器上确认两个固定名称都已注册；当前单摄像头
+MVP 只需确认 `xiaobai`：
 
 ```bash
 curl --fail --silent --show-error http://127.0.0.1:1984/api/streams
 ```
 
-输出必须同时包含 `xiaobai` 和 `xiaobai_25k`。然后使用项目现有的 probe 镜像分别检查两路
-RTSP 输出：
+完整 PoC 的输出必须同时包含 `xiaobai` 和 `xiaobai_25k`；当前 MVP 的输出包含 `xiaobai`
+即可。然后使用项目现有的 probe 镜像检查已配置的 RTSP 输出；未配置第二台摄像头时跳过
+第二条命令：
 
 ```bash
 docker compose -f compose.poc.yaml --profile tools run --rm --entrypoint ffprobe probe \
@@ -189,7 +198,7 @@ docker compose -f compose.poc.yaml --profile tools run --rm --entrypoint ffprobe
   -of json rtsp://127.0.0.1:8554/xiaobai_25k
 ```
 
-两条命令都必须以退出码 `0` 结束，并且各自输出的 `streams` 数组至少包含一项
+所有已执行的命令都必须以退出码 `0` 结束，并且各自输出的 `streams` 数组至少包含一项
 `codec_type` 为 `video` 的流。这里的 `-rtsp_transport tcp` 只控制 ffprobe 到 go2rtc 的
 RTSP 连接；它与 `xiaomi://` 源地址中控制摄像头到 go2rtc 的 `transport` 参数不是同一层。
 如果遗漏该选项，ffprobe 可能先尝试 go2rtc 不支持的 UDP RTSP 传输并显示
@@ -236,9 +245,9 @@ cp config/poc-devices.example.json config/poc-devices.json
 或其他家庭隐私数据。只把上表要求的值抄入清单；不要添加密码、令牌、DID、MAC 地址或小米
 源地址，也不要把命令的完整输出保存到 issue 或报告中。
 
-不要从清单中删除测试失败的摄像头；验收要求必须恰好存在 `xiaobai` 和 `xiaobai_25k`，
-并且从这两个名称中选择唯一的主摄像头。修改此文件会改变其指纹，并有意使之前的探测证据
-失效。
+不要从完整 PoC 清单中删除测试失败的摄像头；完整 PoC 验收要求必须恰好存在 `xiaobai` 和
+`xiaobai_25k`，并且从这两个名称中选择唯一的主摄像头。当前单摄像头 MVP 可以暂不生成
+双摄像头清单。修改此文件会改变其指纹，并有意使之前的探测证据失效。
 
 ## 5. 运行单元测试和代码检查
 
@@ -416,6 +425,140 @@ docker compose -f compose.poc.yaml --profile ha down
 
 保留 `artifacts/poc` 以便记录最终决定。不要使用 `docker compose down -v`；删除卷或状态会
 增加问题排查和后续重跑的难度。
+
+## 14. 启动“人员进入欢迎”MVP
+
+### 14.1 创建私有状态目录和环境文件
+
+MVP 继续使用第 3 节已经验证的 `xiaobai`。先创建不会进入 Git 或 Docker 构建上下文的状态
+目录：
+
+```bash
+mkdir -p deploy/app/state deploy/miservice/state
+chmod 700 deploy/app/state deploy/miservice/state
+test -e .env.mvp || cp .env.mvp.example .env.mvp
+chmod 600 .env.mvp
+```
+
+如果 `.env.mvp` 已存在，不要再次执行 `cp`。在服务器本地填写 `MI_USER`、`MI_PASS` 和
+`MI_DID`；它们必须与 `.env.poc` 中已经通过直连播报的同一账号和 L05C 数值 DID 一致。
+不要在终端输出这三个值。其余参数先保留默认值。
+
+### 14.2 持久化 MiService 登录 Token
+
+MiService 把登录状态写入 `$HOME/.mi.token`。Compose 已将 probe 和 app 的 `HOME` 都设为
+`/var/lib/daihougou/mi`，并把宿主机 `deploy/miservice/state/` 挂载到该位置。这样
+`docker compose run --rm` 删除临时容器时不会再删除 Token。
+
+先重建包含该挂载的 probe，然后在有 TTY 的终端完成一次登录；小米要求时输入手机验证码：
+
+```bash
+docker compose -f compose.poc.yaml --profile tools build probe
+docker compose -f compose.poc.yaml --profile tools run --rm \
+  --entrypoint python probe -m miservice list
+```
+
+不要保存或粘贴设备列表。确认 Token 已持久化并收紧权限：
+
+```bash
+sudo test -s deploy/miservice/state/.mi.token
+sudo chmod 600 deploy/miservice/state/.mi.token
+sudo stat -c '%a %n' deploy/miservice/state deploy/miservice/state/.mi.token
+```
+
+预期两行权限分别为 `700` 和 `600`。随后再次运行同一条 `miservice list` 命令；正常情况下
+不再要求手机验证码。若仍要求验证码，先执行下面的挂载检查，不要重复登录：
+
+```bash
+docker compose -f compose.poc.yaml --profile tools run --rm \
+  --entrypoint sh probe -c 'printf "HOME=%s\n" "$HOME"; test -s "$HOME/.mi.token"'
+```
+
+预期输出 `HOME=/var/lib/daihougou/mi` 且退出码为 `0`。不要执行 `cat .mi.token`。
+
+### 14.3 构建和启动
+
+```bash
+docker compose -f compose.poc.yaml build app
+docker compose -f compose.poc.yaml up -d go2rtc app
+docker compose -f compose.poc.yaml ps go2rtc app
+docker compose -f compose.poc.yaml logs --tail=50 app
+```
+
+app 首次加载模型和等待摄像头帧时可以短暂显示 `health: starting`。60 秒后检查：
+
+```bash
+curl --fail --silent --show-error http://127.0.0.1:8080/healthz \
+  | python3 -m json.tool
+```
+
+摄像头在线时 `camera` 和 `detector` 应最终为 `ready`。摄像头关闭或临时断线时 HTTP 仍返回
+成功，但 `status`/`camera` 为 `degraded`；这表示管理进程还活着，不应通过反复重启 app
+来掩盖摄像头问题。
+
+从局域网浏览器打开 `http://SERVER_IP:8080/`。确认显示的是 `xiaobai` 对应的运行状态，且
+“人员进入欢迎”初始为“已关闭”。页面不需要 Home Assistant。
+
+### 14.4 认证失效处理
+
+常驻 app 不读取 stdin，也不会等待手机验证码。管理页显示音箱认证
+`reauth_required` 时，使用 14.2 的一次性 probe 命令重新完成认证，然后执行：
+
+```bash
+sudo chmod 600 deploy/miservice/state/.mi.token
+docker compose -f compose.poc.yaml restart app
+```
+
+不需要重新构建镜像。重启后等待健康检查，再从管理页继续操作。不要删除 Token 作为普通
+排障手段；只有确认登录状态损坏并准备立即重新认证时，才人工备份后处理该文件。
+
+### 14.5 验证重建后不再要求验证码
+
+先在成年人在场时完成一次第 8.1 节的单次播报，再连续重建 probe 和 app 容器：
+
+```bash
+docker compose -f compose.poc.yaml --profile tools run --rm \
+  -T --entrypoint python probe -m miservice list >/dev/null
+docker compose -f compose.poc.yaml up -d --force-recreate app
+docker compose -f compose.poc.yaml ps app
+```
+
+第一条命令退出码应为 `0`。`-T` 会关闭交互终端：Token 有效时设备列表被重定向到
+`/dev/null`；需要验证码时命令会立即失败，而不会在不可见的提示上等待。第二条完成后
+Token 文件仍存在，app 最终恢复健康。
+
+### 14.6 功能验收
+
+1. 保持规则关闭，先让画面稳定无人 10 秒，再有人进入；音箱不得播报。
+2. 在管理页开启规则。若此时画面已经有人，启动校准不得立即播报。
+3. 画面无人至少 10 秒，然后有人正常走入；从进入到听到欢迎语应不超过 5 秒，且只播一次。
+4. 人持续留在画面 2 分钟；不得重复播报。
+5. 人离开至少 10 秒，并等待上次播报 60 秒冷却结束；再次进入后应播报第二次。
+6. 关闭摄像头；页面应在 30 秒后显示摄像头降级，音箱不得误播。重新打开摄像头后应自动恢复。
+7. 检查应用状态目录只包含 SQLite 及其 WAL/SHM 文件，不得出现图片、视频或音频：
+
+```bash
+find deploy/app/state -maxdepth 1 -type f -printf '%f\n'
+```
+
+完成上述功能后保持 app 连续运行 30 分钟，期间至少完成三次“离开后再次进入”。记录是否有
+漏报、误报、重复播报和超过 5 秒的响应。这个 30 分钟结果用于 MVP 开发验收，不替代第 6、
+8 和 10 节尚未完成的长期稳定性测试。
+
+### 14.7 停止与升级
+
+停止 MVP 但保留 go2rtc：
+
+```bash
+docker compose -f compose.poc.yaml stop app
+```
+
+升级代码后只需重建 app；数据库和登录 Token 都保留在宿主机：
+
+```bash
+docker compose -f compose.poc.yaml build app
+docker compose -f compose.poc.yaml up -d app
+```
 
 ## 产物隐私警告
 
