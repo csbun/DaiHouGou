@@ -124,6 +124,31 @@ class Storage:
             for row in rows
         ]
 
+    def latest_rule_trigger(self, rule_id: str) -> StoredEvent | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM events
+                WHERE rule_id = ?
+                  AND kind IN ('speaker_completed', 'speaker_queue_full',
+                               'speaker_reauth_required', 'speaker_skipped_disabled')
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (rule_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return StoredEvent(
+            id=row["id"],
+            occurred_at=row["occurred_at"],
+            kind=row["kind"],
+            rule_id=row["rule_id"],
+            success=bool(row["success"]),
+            latency_ms=row["latency_ms"],
+            details_json=row["details_json"],
+        )
+
     def journal_mode(self) -> str:
         with self._connect() as connection:
             return str(connection.execute("PRAGMA journal_mode").fetchone()[0])

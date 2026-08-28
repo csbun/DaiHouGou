@@ -19,13 +19,16 @@ class SpeakerWorker:
         self._queue: asyncio.Queue[SpeechAction | None] = asyncio.Queue(maxsize=queue_size)
         self._task: asyncio.Task[None] | None = None
         self.auth_status = "unknown"
+        self.fatal_error = False
 
     async def start(self) -> None:
         if self._task is None:
+            self.fatal_error = False
             self._task = asyncio.create_task(self._consume(), name="speaker-worker")
+            self._task.add_done_callback(self._record_task_result)
 
     def submit(self, action: SpeechAction) -> bool:
-        if self.auth_status == "reauth_required":
+        if self.auth_status == "reauth_required" or self.fatal_error:
             return False
         try:
             self._queue.put_nowait(action)
@@ -42,9 +45,16 @@ class SpeakerWorker:
     async def stop(self) -> None:
         if self._task is None:
             return
-        await self._queue.put(None)
-        await self._task
+        task = self._task
+        if not task.done():
+            await self._queue.put(None)
+        await asyncio.gather(task, return_exceptions=True)
         self._task = None
+
+    def _record_task_result(self, task: asyncio.Task[None]) -> None:
+        if task.cancelled():
+            return
+        self.fatal_error = task.exception() is not None
 
     async def _consume(self) -> None:
         while True:

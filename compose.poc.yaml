@@ -18,7 +18,9 @@ services:
     depends_on:
       go2rtc:
         condition: service_started
-    env_file: .env.mvp
+    env_file:
+      - path: .env.mvp
+        required: false
     environment:
       HOME: /var/lib/daihougou/mi
       PYTHONUNBUFFERED: "1"

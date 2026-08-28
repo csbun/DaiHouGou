@@ -26,7 +26,9 @@ MiService 的 `MI_LOCAL=<IP>:<Token>` UDP 本地模式。
 
 ## 1. 检查服务器
 
-要求 Docker Engine 23 或更高版本、Docker Compose v2，以及至少 10 GB 可用磁盘空间。
+要求 Docker Engine 23 或更高版本、Docker Compose v2.24 或更高版本，以及至少 10 GB 可用
+磁盘空间。`app` 使用 v2.24 引入的可选 `env_file`，因此只运行前 13 节 PoC 时不需要提前创建
+`.env.mvp`。
 
 ```bash
 docker version
@@ -253,18 +255,14 @@ cp config/poc-devices.example.json config/poc-devices.json
 
 ```bash
 docker build -f docker/poc.Dockerfile -t daihougou-poc:test .
-docker run --rm \
-  --mount type=bind,source="$PWD/.dockerignore",target=/workspace/.dockerignore,readonly \
-  --mount type=bind,source="$PWD/compose.poc.yaml",target=/workspace/compose.poc.yaml,readonly \
-  --entrypoint pytest daihougou-poc:test -q
+docker run --rm --entrypoint pytest daihougou-poc:test -q
 docker run --rm --entrypoint ruff daihougou-poc:test check src tests
 docker compose -f compose.poc.yaml config --quiet
 ```
 
-完整 pytest 中有两个仓库策略测试会读取仓库根目录的 `.dockerignore` 和
-`compose.poc.yaml`。测试镜像不会复制这两个部署文件，因此必须按上面的命令从当前仓库
-只读挂载；直接运行不带 `--mount` 的 pytest 会得到两个 `FileNotFoundError`，这不表示业务
-代码测试失败。通过时应显示 `33 passed`。
+PoC 测试镜像已经复制仓库策略测试所需的 `.dockerignore`、Compose、Dockerfile 和 MVP 环境
+示例，因此不需要宿主机只读挂载。pytest 输出末尾不得出现 `failed`；容器内具备 FFmpeg，生成
+视频的集成测试也不得显示为 `skipped`。
 
 ## 6. 运行摄像头 30 分钟稳定性和恢复测试
 
@@ -442,7 +440,15 @@ chmod 600 .env.mvp
 
 如果 `.env.mvp` 已存在，不要再次执行 `cp`。在服务器本地填写 `MI_USER`、`MI_PASS` 和
 `MI_DID`；它们必须与 `.env.poc` 中已经通过直连播报的同一账号和 L05C 数值 DID 一致。
-不要在终端输出这三个值。其余参数先保留默认值。
+同时运行 `ip -4 -brief address`，把 `WEB_HOST=SERVER_LAN_IP` 中的占位值替换为服务器在家庭
+局域网中的固定 IPv4 地址。不要填写 `0.0.0.0`，也不要使用 Docker 网桥地址。只检查不含
+凭据的绑定值：
+
+```bash
+grep '^WEB_HOST=' .env.mvp
+```
+
+不要在终端输出三个小米凭据。其他参数先保留默认值。
 
 ### 14.2 持久化 MiService 登录 Token
 
@@ -488,7 +494,8 @@ docker compose -f compose.poc.yaml logs --tail=50 app
 app 首次加载模型和等待摄像头帧时可以短暂显示 `health: starting`。60 秒后检查：
 
 ```bash
-curl --fail --silent --show-error http://127.0.0.1:8080/healthz \
+server_lan_ip=$(sed -n 's/^WEB_HOST=//p' .env.mvp)
+curl --fail --silent --show-error "http://${server_lan_ip}:8080/healthz" \
   | python3 -m json.tool
 ```
 

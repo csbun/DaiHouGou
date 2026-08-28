@@ -1,7 +1,11 @@
 import io
+import shutil
+import subprocess
+import threading
 import time
 
 import numpy as np
+import pytest
 
 from daihougou.vision.frame_source import (
     FRAME_BYTES,
@@ -16,7 +20,9 @@ def test_ffmpeg_command_forces_tcp_one_fps_and_fixed_bgr_frames() -> None:
 
     assert command[:4] == ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel"]
     assert command[command.index("-rtsp_transport") + 1] == "tcp"
-    assert command[command.index("-vf") + 1] == "fps=1.0,scale=256:256"
+    video_filter = command[command.index("-vf") + 1]
+    assert video_filter.startswith("fps=1.0,scale=256:256:force_original_aspect_ratio=decrease")
+    assert "pad=256:256" in video_filter
     assert command[-5:] == ["-pix_fmt", "bgr24", "-f", "rawvideo", "pipe:1"]
 
 
@@ -80,3 +86,87 @@ def test_truncated_frame_is_never_published() -> None:
     source.stop()
 
     assert sample is None
+
+
+class BlockingStream:
+    def __init__(self, released: threading.Event) -> None:
+        self._released = released
+
+    def read(self, size: int) -> bytes:
+        self._released.wait(timeout=2)
+        return b""
+
+
+class BlockingProcess(FakeProcess):
+    def __init__(self) -> None:
+        self.released = threading.Event()
+        self.stdout = BlockingStream(self.released)
+        self.returncode = None
+
+    def terminate(self) -> None:
+        self.returncode = 0
+        self.released.set()
+
+    def kill(self) -> None:
+        self.returncode = -9
+        self.released.set()
+
+
+def test_stalled_process_is_terminated_and_recreated() -> None:
+    processes: list[BlockingProcess] = []
+
+    def factory(command: list[str]) -> BlockingProcess:
+        process = BlockingProcess()
+        processes.append(process)
+        return process
+
+    source = FfmpegFrameSource(
+        "rtsp://127.0.0.1:8554/xiaobai",
+        process_factory=factory,
+        stall_timeout=0.05,
+        watchdog_interval=0.01,
+    )
+
+    source.start()
+    deadline = time.monotonic() + 2
+    while len(processes) < 2 and time.monotonic() < deadline:
+        time.sleep(0.01)
+    source.stop()
+
+    assert len(processes) >= 2
+    assert processes[0].returncode == 0
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg is required")
+def test_production_filter_letterboxes_widescreen_frame_without_distortion() -> None:
+    command = build_ffmpeg_command("ignored", 1.0)
+    video_filter = command[command.index("-vf") + 1]
+    completed = subprocess.run(
+        [
+            "ffmpeg",
+            "-nostdin",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=red:s=320x180:r=1:d=1",
+            "-vf",
+            video_filter,
+            "-frames:v",
+            "1",
+            "-pix_fmt",
+            "bgr24",
+            "-f",
+            "rawvideo",
+            "pipe:1",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    frame = np.frombuffer(completed.stdout, dtype=np.uint8).reshape(256, 256, 3)
+
+    assert np.allclose(frame[10, 128], [128, 128, 128], atol=4)
+    assert frame[128, 128, 2] > 240
+    assert frame[128, 128, :2].max() < 10

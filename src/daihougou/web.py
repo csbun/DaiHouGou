@@ -10,7 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from daihougou.runtime import RuntimeSnapshot
-from daihougou.storage import WELCOME_RULE_ID, Storage
+from daihougou.storage import WELCOME_RULE_ID, EventRecord, Storage
 
 PACKAGE_DIR = Path(__file__).parent
 
@@ -52,6 +52,7 @@ def create_app(
                 "snapshot": runtime.snapshot(),
                 "rule_enabled": storage.rule_enabled(WELCOME_RULE_ID),
                 "events": storage.recent_events(limit=8),
+                "latest_rule_trigger": storage.latest_rule_trigger(WELCOME_RULE_ID),
                 "csrf_token": token,
                 "rule_id": WELCOME_RULE_ID,
             },
@@ -86,6 +87,14 @@ def create_app(
         if rule_id != WELCOME_RULE_ID or action not in {"enable", "disable"}:
             raise HTTPException(status_code=404, detail="unknown_rule")
         storage.set_rule_enabled(rule_id, action == "enable")
+        storage.record_event(
+            EventRecord(
+                "rule_enabled_changed",
+                True,
+                rule_id=rule_id,
+                details={"enabled": action == "enable"},
+            )
+        )
         return RedirectResponse("/", status_code=303)
 
     @app.get("/healthz")

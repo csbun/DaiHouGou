@@ -74,8 +74,9 @@ FFmpeg 工具链和 OpenCV 生态，避免在设备验证之后再更换语言�
 ### `vision.frame_source` 模块
 
 接口向检测循环提供带单调时间戳的最新 BGR 帧。FFmpeg 适配器持续读取
-`rtsp://127.0.0.1:8554/xiaobai`，使用 TCP RTSP，并在取帧阶段降至约 1 FPS。它隐藏子进程
-启动、帧边界解析、过期帧丢弃、stderr 限流和断线重连。
+`rtsp://127.0.0.1:8554/xiaobai`，使用 TCP RTSP，并在取帧阶段降至约 1 FPS。缩放时保持
+原始宽高比，以中性灰补齐固定输入尺寸，避免把 16:9 人体压缩成正方形。它隐藏子进程启动、
+帧边界解析、过期帧丢弃、stderr 限流、断线重连和无输出 watchdog。
 
 只保留最新帧，不建立无界帧队列。检测速度慢于取帧速度时丢弃旧帧，确保规则看到的是当前
 画面而不是积压画面。
@@ -210,8 +211,11 @@ stdin，不等待验证码，也不循环尝试登录。认证失效时，本次
 
 - FFmpeg 意外退出：记录分类后的错误并按 1、2、4、8、16、30 秒上限重启。恢复成功后清零
   退避。重连期间不产生人员观测。
-- 连续 30 秒没有有效帧：摄像头状态为 `degraded`，但 Web 和数据库继续运行。
+- 连续 30 秒没有有效帧：watchdog 终止并重建 FFmpeg，摄像头状态为 `degraded`，但 Web 和
+  数据库继续运行。断流及推理失败会清除未完成的在场确认窗口，不能把无效间隔计入离开时间。
 - 单次推理异常：记录错误并跳过该帧；连续异常使检测器状态为 `degraded`，不会被解释成无人。
+- 检测循环或播报消费者意外退出：应用状态为 `unhealthy`，容器健康检查失败并由 Compose
+  重启；可恢复的摄像头断线仍保持 `degraded`，不触发容器重启。
 - SQLite 初始化或迁移失败：应用启动失败，让 Compose 重启，避免在无持久状态下继续运行。
 - 播报超时或响应失败：记录一次动作失败，不自动重复播报，避免恢复后突然播放过期欢迎语。
 - MiService 要求 OTP：标记 `reauth_required`，停止提交新的音箱子进程，直到 Token 文件更新或
@@ -225,7 +229,8 @@ stdin，不等待验证码，也不循环尝试登录。认证失效时，本次
 Compose 增加常驻 `app` 服务，继续保留 `probe` tools profile 和可选 HA profile：
 
 - `go2rtc` 使用 host network，API 和 RTSP 继续只监听回环地址。
-- `app` 使用 host network，在可配置的局域网地址和端口监听管理页。
+- `app` 使用 host network，在显式配置的局域网地址和端口监听管理页；容器健康探针访问同一
+  地址，不要求额外监听回环或所有网卡。
 - `/var/lib/daihougou/data` 挂载到忽略的 `deploy/app/state/` 保存 SQLite。
 - `/var/lib/daihougou/mi` 挂载到忽略的 `deploy/miservice/state/` 保存登录 Token。
 - `app` 设置 `restart: unless-stopped`，并且只运行一个 Uvicorn worker。

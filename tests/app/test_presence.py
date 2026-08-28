@@ -43,19 +43,20 @@ def test_ten_seconds_without_person_changes_to_absent_without_event() -> None:
     tracker = PresenceTracker(leave_seconds=10)
     feed(tracker, [(0, True), (1, True), (2, True)])
 
-    assert tracker.observe(11.9, False) is None
+    assert tracker.observe(3, False) is None
     assert tracker.state is PresenceState.PRESENT
-    assert tracker.observe(12, False) is None
+    assert tracker.observe(13, False) is None
     assert tracker.state is PresenceState.ABSENT
 
 
 def test_reentry_after_leaving_requires_two_new_positive_observations() -> None:
     tracker = PresenceTracker(leave_seconds=10)
     feed(tracker, [(0, True), (1, True), (2, True)])
-    tracker.observe(12, False)
+    tracker.observe(3, False)
+    tracker.observe(13, False)
 
-    assert tracker.observe(13, True) is None
-    event = tracker.observe(14, True)
+    assert tracker.observe(14, True) is None
+    event = tracker.observe(15, True)
 
     assert event is not None
     assert event.kind is PresenceEventKind.PERSON_ENTERED
@@ -67,3 +68,14 @@ def test_observation_time_must_be_monotonic() -> None:
 
     with pytest.raises(ValueError, match="monotonic"):
         tracker.observe(1, False)
+
+
+def test_invalid_gap_does_not_count_as_leave_or_emit_false_reentry() -> None:
+    tracker = PresenceTracker(leave_seconds=10)
+    feed(tracker, [(0, True), (1, True), (2, True)])
+
+    tracker.invalidate()
+    events = feed(tracker, [(100, False), (101, True), (102, True)])
+
+    assert tracker.state is PresenceState.PRESENT
+    assert events == [None, None, None]

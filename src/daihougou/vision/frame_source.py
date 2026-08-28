@@ -11,6 +11,8 @@ import numpy.typing as npt
 FRAME_WIDTH = 256
 FRAME_HEIGHT = 256
 FRAME_BYTES = FRAME_WIDTH * FRAME_HEIGHT * 3
+DEFAULT_STALL_TIMEOUT_SECONDS = 30.0
+DEFAULT_WATCHDOG_INTERVAL_SECONDS = 1.0
 
 
 class Process(Protocol):
@@ -51,7 +53,11 @@ def build_ffmpeg_command(stream_url: str, fps: float) -> list[str]:
         "-sn",
         "-dn",
         "-vf",
-        f"fps={fps},scale={FRAME_WIDTH}:{FRAME_HEIGHT}",
+        (
+            f"fps={fps},scale={FRAME_WIDTH}:{FRAME_HEIGHT}:"
+            "force_original_aspect_ratio=decrease,"
+            f"pad={FRAME_WIDTH}:{FRAME_HEIGHT}:(ow-iw)/2:(oh-ih)/2:color=0x808080"
+        ),
         "-pix_fmt",
         "bgr24",
         "-f",
@@ -73,6 +79,13 @@ def _spawn(command: list[str]) -> Process:
     )
 
 
+def _terminate(process: Process) -> None:
+    try:
+        process.terminate()
+    except OSError:
+        pass
+
+
 def _read_exact(stream: BinaryIO, size: int) -> bytes:
     chunks: list[bytes] = []
     remaining = size
@@ -92,14 +105,21 @@ class FfmpegFrameSource:
         fps: float = 1.0,
         process_factory: ProcessFactory = _spawn,
         sleeper: Callable[[float], None] = time.sleep,
+        stall_timeout: float = DEFAULT_STALL_TIMEOUT_SECONDS,
+        watchdog_interval: float = DEFAULT_WATCHDOG_INTERVAL_SECONDS,
     ) -> None:
         self._command = build_ffmpeg_command(stream_url, fps)
         self._process_factory = process_factory
         self._sleeper = sleeper
+        self._stall_timeout = stall_timeout
+        self._watchdog_interval = watchdog_interval
         self._condition = threading.Condition()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        self._watchdog_thread: threading.Thread | None = None
         self._process: Process | None = None
+        self._process_started_at: float | None = None
+        self._last_frame_at: float | None = None
         self._latest: FrameSample | None = None
         self._sequence = 0
         self.status = "stopped"
@@ -110,7 +130,11 @@ class FfmpegFrameSource:
         self._stop.clear()
         self.status = "starting"
         self._thread = threading.Thread(target=self._run, name="ffmpeg-frame-source", daemon=True)
+        self._watchdog_thread = threading.Thread(
+            target=self._watch_stalls, name="ffmpeg-frame-watchdog", daemon=True
+        )
         self._thread.start()
+        self._watchdog_thread.start()
 
     def wait_for_frame(self, after_sequence: int, timeout: float) -> FrameSample | None:
         with self._condition:
@@ -126,14 +150,18 @@ class FfmpegFrameSource:
         self._stop.set()
         process = self._process
         if process is not None and process.poll() is None:
-            process.terminate()
+            _terminate(process)
         thread = self._thread
         if thread is not None:
             thread.join(timeout=5)
         if thread is not None and thread.is_alive() and process is not None:
             process.kill()
             thread.join(timeout=2)
+        watchdog_thread = self._watchdog_thread
+        if watchdog_thread is not None:
+            watchdog_thread.join(timeout=2)
         self._thread = None
+        self._watchdog_thread = None
         self.status = "stopped"
         with self._condition:
             self._condition.notify_all()
@@ -149,7 +177,10 @@ class FfmpegFrameSource:
                     break
                 attempt += 1
                 continue
-            self._process = process
+            with self._condition:
+                self._process = process
+                self._process_started_at = time.monotonic()
+                self._last_frame_at = None
             stream = process.stdout
             complete_frames = 0
             if stream is not None:
@@ -162,17 +193,23 @@ class FfmpegFrameSource:
                     ).copy()
                     with self._condition:
                         self._sequence += 1
-                        self._latest = FrameSample(self._sequence, time.monotonic(), frame)
+                        captured_at = time.monotonic()
+                        self._latest = FrameSample(self._sequence, captured_at, frame)
+                        self._last_frame_at = captured_at
                         self.status = "ready"
                         self._condition.notify_all()
                     complete_frames += 1
             if process.poll() is None:
-                process.terminate()
+                _terminate(process)
                 try:
                     process.wait(timeout=2)
                 except subprocess.TimeoutExpired:
                     process.kill()
-            self._process = None
+            with self._condition:
+                if self._process is process:
+                    self._process = None
+                    self._process_started_at = None
+                    self._last_frame_at = None
             if self._stop.is_set():
                 break
             self.status = "degraded"
@@ -185,3 +222,17 @@ class FfmpegFrameSource:
         while not self._stop.is_set() and time.monotonic() < deadline:
             self._sleeper(min(0.1, max(0, deadline - time.monotonic())))
         return not self._stop.is_set()
+
+    def _watch_stalls(self) -> None:
+        while not self._stop.wait(self._watchdog_interval):
+            with self._condition:
+                process = self._process
+                reference = self._last_frame_at or self._process_started_at
+            if (
+                process is not None
+                and reference is not None
+                and process.poll() is None
+                and time.monotonic() - reference >= self._stall_timeout
+            ):
+                self.status = "degraded"
+                _terminate(process)

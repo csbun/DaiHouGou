@@ -207,3 +207,93 @@ def test_runtime_bounds_speaker_shutdown_and_reports_timeout(
         assert runtime.snapshot().last_error == "speaker_stop_timeout"
 
     asyncio.run(scenario())
+
+
+def test_runtime_marks_unexpected_detection_loop_exit_unhealthy(tmp_path: Path) -> None:
+    class BrokenStorage(Storage):
+        def record_event(self, event) -> None:
+            raise RuntimeError("database unavailable")
+
+    async def scenario() -> None:
+        storage = BrokenStorage(tmp_path / "app.db")
+        runtime = Runtime(
+            FakeFrameSource([0, 1, 2]),
+            FakeDetector([False, False, False]),
+            PresenceTracker(),
+            WelcomeRule(storage),
+            SpeakerWorker(FakeSpeaker(), storage),
+            storage,
+        )
+
+        await runtime.start()
+        deadline = time.monotonic() + 1
+        while runtime.snapshot().overall != "unhealthy" and time.monotonic() < deadline:
+            await asyncio.sleep(0.01)
+        snapshot = runtime.snapshot()
+        await runtime.stop()
+
+        assert snapshot.app == "unhealthy"
+        assert snapshot.overall == "unhealthy"
+
+    asyncio.run(scenario())
+
+
+def test_runtime_invalidates_presence_when_frames_are_missing(tmp_path: Path) -> None:
+    class TrackingPresence(PresenceTracker):
+        def __init__(self) -> None:
+            super().__init__()
+            self.invalidations = 0
+
+        def invalidate(self) -> None:
+            self.invalidations += 1
+            super().invalidate()
+
+    async def scenario() -> None:
+        storage = Storage(tmp_path / "app.db")
+        presence = TrackingPresence()
+        runtime = Runtime(
+            FakeFrameSource([]),
+            FakeDetector([]),
+            presence,
+            WelcomeRule(storage),
+            SpeakerWorker(FakeSpeaker(), storage),
+            storage,
+        )
+
+        await runtime.start()
+        deadline = time.monotonic() + 1
+        while presence.invalidations == 0 and time.monotonic() < deadline:
+            await asyncio.sleep(0.01)
+        await runtime.stop()
+
+        assert presence.invalidations > 0
+
+    asyncio.run(scenario())
+
+
+def test_runtime_reports_speaker_consumer_failure_as_unhealthy(tmp_path: Path) -> None:
+    class FailedWorker:
+        auth_status = "unknown"
+        fatal_error = True
+
+        async def start(self) -> None:
+            pass
+
+        async def stop(self) -> None:
+            pass
+
+        def submit(self, action: object) -> bool:
+            return False
+
+    storage = Storage(tmp_path / "app.db")
+    runtime = Runtime(
+        FakeFrameSource([]),
+        FakeDetector([]),
+        PresenceTracker(),
+        WelcomeRule(storage),
+        FailedWorker(),
+        storage,
+    )
+
+    assert runtime.snapshot().app == "unhealthy"
+    assert runtime.snapshot().overall == "unhealthy"

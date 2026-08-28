@@ -31,6 +31,7 @@ class Detector(Protocol):
 
 class ManagedSpeakerWorker(Protocol):
     auth_status: str
+    fatal_error: bool
 
     async def start(self) -> None: ...
 
@@ -54,6 +55,8 @@ class RuntimeSnapshot:
 
     @property
     def overall(self) -> str:
+        if "unhealthy" in (self.app, self.database, self.camera, self.detector):
+            return "unhealthy"
         required = (self.app, self.database, self.camera, self.detector)
         return "ready" if required == ("running", "ready", "ready", "ready") else "degraded"
 
@@ -106,11 +109,12 @@ class Runtime:
         self._stop.set()
         await asyncio.to_thread(self._frame_source.stop)
         if self._task is not None:
-            try:
-                await asyncio.wait_for(self._task, timeout=DETECTION_STOP_TIMEOUT_SECONDS)
-            except TimeoutError:
+            done, pending = await asyncio.wait(
+                {self._task}, timeout=DETECTION_STOP_TIMEOUT_SECONDS
+            )
+            if pending:
                 self._task.cancel()
-                await asyncio.gather(self._task, return_exceptions=True)
+            await asyncio.gather(*done, *pending, return_exceptions=True)
             self._task = None
         try:
             await asyncio.wait_for(
@@ -121,8 +125,13 @@ class Runtime:
         self._app_status = "stopped"
 
     def snapshot(self) -> RuntimeSnapshot:
+        detection_stopped = (
+            self._task is not None and self._task.done() and not self._stop.is_set()
+        )
+        speaker_failed = bool(getattr(self._speaker_worker, "fatal_error", False))
+        unhealthy = detection_stopped or speaker_failed
         return RuntimeSnapshot(
-            app=self._app_status,
+            app="unhealthy" if unhealthy else self._app_status,
             database=self._database_status,
             camera=self._camera_status,
             detector=self._detector_status,
@@ -131,7 +140,7 @@ class Runtime:
             last_sequence=self._last_sequence,
             last_confidence=self._last_confidence,
             last_detection_latency_ms=self._last_detection_latency_ms,
-            last_error=self._last_error,
+            last_error="background_task_stopped" if unhealthy else self._last_error,
         )
 
     async def _detect_loop(self) -> None:
@@ -140,6 +149,7 @@ class Runtime:
                 self._frame_source.wait_for_frame, self._last_sequence, 2.0
             )
             if sample is None:
+                self._presence.invalidate()
                 reference = (
                     self._last_frame_at
                     if self._last_frame_at is not None
@@ -162,6 +172,7 @@ class Runtime:
         try:
             result = await asyncio.to_thread(self._detector.detect, sample.frame)
         except Exception:  # noqa: BLE001 - detector backends expose varied exceptions.
+            self._presence.invalidate()
             self._detector_status = "degraded"
             self._last_error = "detector_failed"
             self._storage.record_event(EventRecord("detector_failed", False))

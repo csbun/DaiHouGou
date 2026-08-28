@@ -41,7 +41,17 @@
         <div class="rule-row">
           <div>
             <h3>人员进入欢迎</h3>
-            <p>{{ '已开启' if rule_enabled else '已关闭' }}</p>
+            <p>
+              {{ '已开启' if rule_enabled else '已关闭' }}
+              {% if latest_rule_trigger %}
+                · 最近触发：{{ '成功' if latest_rule_trigger.success else '未完成' }}
+                {% if latest_rule_trigger.latency_ms is not none %}
+                  · {{ latest_rule_trigger.latency_ms }} ms
+                {% endif %}
+              {% else %}
+                · 尚未触发
+              {% endif %}
+            </p>
           </div>
           <form method="post" action="/rules/{{ rule_id }}/{{ 'disable' if rule_enabled else 'enable' }}">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">

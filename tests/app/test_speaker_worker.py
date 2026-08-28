@@ -88,3 +88,22 @@ def test_worker_drops_newest_action_when_queue_is_full() -> None:
     assert worker.submit(action(1)) is True
     assert worker.submit(action(2)) is False
     assert storage.events[-1].kind == "speaker_queue_full"
+
+
+def test_worker_reports_fatal_background_failure_and_stops_without_hanging() -> None:
+    class BrokenStorage(FakeStorage):
+        def record_event(self, event: EventRecord) -> None:
+            raise RuntimeError("database unavailable")
+
+    async def scenario() -> None:
+        worker = SpeakerWorker(FakeSpeaker(SpeakResult(True, 10, 0)), BrokenStorage())
+        await worker.start()
+        worker.submit(action())
+        deadline = asyncio.get_running_loop().time() + 1
+        while not worker.fatal_error and asyncio.get_running_loop().time() < deadline:
+            await asyncio.sleep(0.01)
+
+        assert worker.fatal_error is True
+        await asyncio.wait_for(worker.stop(), timeout=0.2)
+
+    asyncio.run(scenario())

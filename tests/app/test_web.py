@@ -3,7 +3,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from daihougou.runtime import RuntimeSnapshot
-from daihougou.storage import Storage
+from daihougou.storage import EventRecord, Storage
 from daihougou.web import create_app
 
 
@@ -76,6 +76,26 @@ def test_same_origin_form_with_csrf_can_enable_rule(tmp_path: Path) -> None:
 
     assert response.status_code == 303
     assert storage.rule_enabled("welcome_on_person_entry") is True
+    assert storage.recent_events()[0].kind == "rule_enabled_changed"
+
+
+def test_home_shows_latest_rule_trigger_result(tmp_path: Path) -> None:
+    storage = Storage(tmp_path / "app.db")
+    storage.initialize()
+    storage.record_event(
+        EventRecord(
+            "speaker_completed",
+            True,
+            rule_id="welcome_on_person_entry",
+            latency_ms=321,
+        )
+    )
+
+    with TestClient(create_app(storage, FakeRuntime(), csrf_token="fixed-token")) as client:
+        response = client.get("/")
+
+    assert "最近触发：成功" in response.text
+    assert "321 ms" in response.text
 
 
 def test_rule_update_rejects_missing_csrf_and_cross_origin(tmp_path: Path) -> None:
