@@ -7,6 +7,8 @@ RUN apt-get update \
 WORKDIR /workspace
 
 COPY pyproject.toml ./
+COPY .dockerignore compose.poc.yaml .env.mvp.example ./
+COPY docker ./docker
 COPY src ./src
 COPY tests ./tests
 
