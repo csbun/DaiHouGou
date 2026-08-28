@@ -297,3 +297,54 @@ def test_runtime_reports_speaker_consumer_failure_as_unhealthy(tmp_path: Path) -
 
     assert runtime.snapshot().app == "unhealthy"
     assert runtime.snapshot().overall == "unhealthy"
+
+
+def test_runtime_gap_cannot_create_false_leave_and_reentry(tmp_path: Path) -> None:
+    class GappedFrameSource(FakeFrameSource):
+        def __init__(self) -> None:
+            frame = np.zeros((256, 256, 3), dtype=np.uint8)
+            self.samples = deque(
+                [
+                    FrameSample(1, 0, frame),
+                    FrameSample(2, 1, frame),
+                    FrameSample(3, 2, frame),
+                    None,
+                    FrameSample(4, 100, frame),
+                    FrameSample(5, 101, frame),
+                    FrameSample(6, 102, frame),
+                ]
+            )
+            self.started = False
+            self.stopped = False
+
+        def wait_for_frame(self, after_sequence: int, timeout: float) -> FrameSample | None:
+            if self.samples:
+                return self.samples.popleft()
+            time.sleep(0.01)
+            return None
+
+    async def scenario() -> None:
+        storage = Storage(tmp_path / "app.db")
+        storage.initialize()
+        storage.set_rule_enabled("welcome_on_person_entry", True)
+        speaker = FakeSpeaker()
+        worker = SpeakerWorker(speaker, storage)
+        runtime = Runtime(
+            GappedFrameSource(),
+            FakeDetector([True, True, True, False, True, True]),
+            PresenceTracker(),
+            WelcomeRule(storage),
+            worker,
+            storage,
+        )
+
+        await runtime.start()
+        await wait_for_sequence(runtime, 6)
+        await worker.join()
+        snapshot = runtime.snapshot()
+        await runtime.stop()
+
+        assert snapshot.presence == "present"
+        assert speaker.spoken == []
+
+    asyncio.run(scenario())
