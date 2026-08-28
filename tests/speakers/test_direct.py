@@ -2,6 +2,7 @@ import json
 import subprocess
 from unittest.mock import patch
 
+from daihougou.speaker import _run
 from daihougou_poc.speakers.direct import DirectSpeaker
 
 
@@ -58,3 +59,53 @@ def test_direct_speaker_does_not_forward_unrelated_environment_secrets() -> None
 
     assert "HA_ACCESS_TOKEN" not in captured
     assert captured["PATH"] == "/bin"
+
+
+def test_direct_speaker_passes_persistent_home_to_miservice() -> None:
+    captured = {}
+
+    def run(command: list[str], env: dict[str, str], timeout: int):
+        captured.update(env)
+        return 0, '{"code":0}', ""
+
+    with patch.dict(
+        "os.environ", {"HOME": "/var/lib/daihougou/mi", "PATH": "/bin"}, clear=True
+    ):
+        DirectSpeaker("user", "password", "did", run=run).speak("hello")
+
+    assert captured["HOME"] == "/var/lib/daihougou/mi"
+
+
+def test_direct_speaker_classifies_login_failure_without_storing_raw_error() -> None:
+    def run(command: list[str], env: dict[str, str], timeout: int):
+        return 1, "", "Exception on login owner@example.test: Login auth failed"
+
+    result = DirectSpeaker("owner@example.test", "password", "did", run=run).speak("hello")
+
+    assert result.success is False
+    assert result.code == "reauth_required"
+    assert result.error == "reauth_required"
+    assert "owner@example.test" not in result.error
+
+
+def test_direct_speaker_classifies_login_response_code_as_reauthentication() -> None:
+    def run(command: list[str], env: dict[str, str], timeout: int):
+        return 0, '{"code":70016}', ""
+
+    result = DirectSpeaker("user", "password", "did", run=run).speak("hello")
+
+    assert result.code == "reauth_required"
+    assert result.error == "reauth_required"
+
+
+def test_miservice_runner_never_reads_interactive_input() -> None:
+    captured = {}
+
+    def fake_run(command: list[str], **kwargs):
+        captured.update(kwargs)
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    with patch("daihougou.speaker.subprocess.run", fake_run):
+        _run(["python", "-m", "miservice"], {}, 30)
+
+    assert captured["stdin"] is subprocess.DEVNULL

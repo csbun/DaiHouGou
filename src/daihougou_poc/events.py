@@ -3,20 +3,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
-SECRET_FRAGMENTS = ("token", "password", "pass", "secret", "authorization", "cookie")
-
-
-def redact(value: Any) -> Any:
-    if isinstance(value, dict):
-        return {
-            key: "[REDACTED]"
-            if any(part in key.lower() for part in SECRET_FRAGMENTS)
-            else redact(item)
-            for key, item in value.items()
-        }
-    if isinstance(value, list):
-        return [redact(item) for item in value]
-    return value
+from daihougou.redaction import redact
 
 
 @dataclass(frozen=True)

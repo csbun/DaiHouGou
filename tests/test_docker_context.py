@@ -12,10 +12,13 @@ def test_docker_context_excludes_sensitive_and_generated_paths() -> None:
         ".git",
         ".worktrees",
         ".env.poc",
+        ".env.mvp",
         "artifacts",
         "config/poc-devices.json",
+        "deploy/app/state",
         "deploy/go2rtc/state",
         "deploy/homeassistant/state",
+        "deploy/miservice/state",
         "**/__pycache__",
         "**/.pytest_cache",
         "**/.ruff_cache",
@@ -28,3 +31,10 @@ def test_go2rtc_does_not_replace_the_image_command_with_bare_flags() -> None:
     compose = Path("compose.poc.yaml").read_text(encoding="utf-8")
 
     assert 'command: ["-c", "/config/go2rtc.yaml"]' not in compose
+
+
+def test_probe_persists_miservice_token_in_private_home() -> None:
+    compose = Path("compose.poc.yaml").read_text(encoding="utf-8")
+
+    assert "HOME: /var/lib/daihougou/mi" in compose
+    assert "./deploy/miservice/state:/var/lib/daihougou/mi" in compose

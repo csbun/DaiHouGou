@@ -1,14 +1,3 @@
-from dataclasses import dataclass
-from typing import Protocol
+from daihougou.speaker import Speaker, SpeakResult
 
-
-@dataclass(frozen=True)
-class SpeakResult:
-    success: bool
-    latency_ms: int
-    code: int | str | None
-    error: str = ""
-
-
-class Speaker(Protocol):
-    def speak(self, text: str) -> SpeakResult: ...
+__all__ = ["SpeakResult", "Speaker"]

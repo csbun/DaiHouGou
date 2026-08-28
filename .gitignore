@@ -1,9 +1,12 @@
 .worktrees/
 .env.poc
+.env.mvp
 artifacts/
 config/poc-devices.json
+deploy/app/state/
 deploy/go2rtc/state/
 deploy/homeassistant/state/
+deploy/miservice/state/
 __pycache__/
 .pytest_cache/
 .ruff_cache/
