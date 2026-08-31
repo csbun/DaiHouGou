@@ -14,12 +14,18 @@ WELCOME_PHRASES = (
 
 
 class RuleState(Protocol):
-    def rule_enabled(self, rule_id: str) -> bool: ...
+    def camera_rule_enabled(self, camera_id: str, rule_id: str) -> bool: ...
+
+    def camera_speaker_id(self, camera_id: str) -> str: ...
+
+    def welcome_phrases(self) -> tuple[str, ...]: ...
 
 
 @dataclass(frozen=True)
 class SpeechAction:
+    camera_id: str
     rule_id: str
+    speaker_id: str
     text: str
     created_monotonic: float
 
@@ -27,10 +33,12 @@ class SpeechAction:
 class WelcomeRule:
     def __init__(
         self,
+        camera_id: str,
         state: RuleState,
         cooldown_seconds: float = 60,
         chooser: Callable[[Sequence[str]], str] = random.choice,
     ) -> None:
+        self._camera_id = camera_id
         self._state = state
         self._cooldown_seconds = cooldown_seconds
         self._chooser = chooser
@@ -39,7 +47,7 @@ class WelcomeRule:
     def handle(self, event: PresenceEvent) -> SpeechAction | None:
         if event.kind is not PresenceEventKind.PERSON_ENTERED:
             return None
-        if not self._state.rule_enabled(WELCOME_RULE_ID):
+        if not self._state.camera_rule_enabled(self._camera_id, WELCOME_RULE_ID):
             return None
         if (
             self._last_action_at is not None
@@ -48,7 +56,9 @@ class WelcomeRule:
             return None
         self._last_action_at = event.occurred_monotonic
         return SpeechAction(
-            WELCOME_RULE_ID,
-            self._chooser(WELCOME_PHRASES),
-            event.occurred_monotonic,
+            camera_id=self._camera_id,
+            rule_id=WELCOME_RULE_ID,
+            speaker_id=self._state.camera_speaker_id(self._camera_id),
+            text=self._chooser(self._state.welcome_phrases()),
+            created_monotonic=event.occurred_monotonic,
         )
