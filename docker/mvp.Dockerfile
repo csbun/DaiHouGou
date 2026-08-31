@@ -1,3 +1,5 @@
+# syntax=docker/dockerfile:1
+
 FROM python:3.12.11-slim-bookworm
 
 ARG MODEL_URL=https://media.githubusercontent.com/media/opencv/opencv_zoo/47534e27c9851bb1128ccc0102f1145e27f23f98/models/person_detection_mediapipe/person_detection_mediapipe_2023mar.onnx
@@ -14,7 +16,8 @@ COPY .dockerignore compose.poc.yaml .env.mvp.example ./
 COPY docker ./docker
 COPY src ./src
 COPY tests ./tests
-RUN pip install --no-cache-dir '.[dev]'
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install '.[dev]'
 
 RUN mkdir -p /opt/daihougou/models \
     && curl --fail --silent --show-error --location \

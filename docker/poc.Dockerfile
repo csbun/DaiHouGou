@@ -1,3 +1,5 @@
+# syntax=docker/dockerfile:1
+
 FROM python:3.12.11-slim-bookworm
 
 RUN apt-get update \
@@ -12,6 +14,7 @@ COPY docker ./docker
 COPY src ./src
 COPY tests ./tests
 
-RUN pip install --no-cache-dir '.[dev]'
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install '.[dev]'
 
 ENTRYPOINT ["daihougou-poc"]
