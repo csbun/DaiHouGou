@@ -61,6 +61,13 @@ def test_settings_reject_legacy_mvp_keys_when_new_settings_are_present(
             ],
             "speaker ids must be unique",
         ),
+        (
+            [
+                {"id": "living_room", "name": "客厅", "did": "1"},
+                {"id": "bedroom", "name": "卧室", "did": "1"},
+            ],
+            "speaker dids must be unique",
+        ),
         ([{"id": "room", "name": " ", "did": "1"}], "speaker name is invalid"),
         ([{"id": "room", "name": "客厅", "did": ""}], "speaker did is invalid"),
     ],

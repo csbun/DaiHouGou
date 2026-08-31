@@ -43,6 +43,8 @@ def _speaker_catalog(raw: str) -> tuple[SpeakerConfig, ...]:
         speakers.append(SpeakerConfig(speaker_id, name.strip(), did.strip()))
     if len({speaker.id for speaker in speakers}) != len(speakers):
         raise ValueError("speaker ids must be unique")
+    if len({speaker.did for speaker in speakers}) != len(speakers):
+        raise ValueError("speaker dids must be unique")
     return tuple(speakers)
 
 
