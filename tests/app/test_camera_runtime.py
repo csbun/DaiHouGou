@@ -7,7 +7,7 @@ import numpy as np
 
 from daihougou.camera_runtime import CameraRuntime
 from daihougou.presence import PresenceTracker
-from daihougou.rules import SpeechAction, WELCOME_RULE_ID, WelcomeRule
+from daihougou.rules import WELCOME_RULE_ID, SpeechAction, WelcomeRule
 from daihougou.storage import Storage
 from daihougou.vision.frame_source import FrameSample
 from daihougou.vision.person_detector import PersonDetection

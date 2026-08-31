@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from daihougou.rules import WELCOME_PHRASES, WELCOME_RULE_ID
-from daihougou.storage import EventRecord, IncompatibleSchemaError, SCHEMA_VERSION, Storage
+from daihougou.storage import SCHEMA_VERSION, EventRecord, IncompatibleSchemaError, Storage
 
 
 def test_new_database_has_v2_schema_and_default_welcome_phrases(tmp_path: Path) -> None:

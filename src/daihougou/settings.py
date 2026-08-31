@@ -5,7 +5,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-
 SPEAKER_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
 
@@ -29,7 +28,9 @@ def _speaker_catalog(raw: str) -> tuple[SpeakerConfig, ...]:
     speakers: list[SpeakerConfig] = []
     for item in payload:
         if not isinstance(item, dict):
-            raise ValueError("each speaker must be an object")
+            raise ValueError(  # noqa: TRY004 - malformed config uses one error family.
+                "each speaker must be an object"
+            )
         speaker_id = item.get("id")
         name = item.get("name")
         did = item.get("did")

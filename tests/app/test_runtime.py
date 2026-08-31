@@ -5,7 +5,7 @@ from pathlib import Path
 from urllib.parse import unquote
 
 from daihougou.go2rtc import DiscoveryError
-from daihougou.rules import SpeechAction, WELCOME_RULE_ID
+from daihougou.rules import WELCOME_RULE_ID, SpeechAction
 from daihougou.runtime import Runtime
 from daihougou.settings import SpeakerConfig
 from daihougou.storage import EventRecord, Storage
@@ -43,7 +43,6 @@ class FakeSource:
         if self.broken:
             raise RuntimeError("private stream failure")
         time.sleep(0.005)
-        return None
 
     def stop(self) -> None:
         self.stopped = True

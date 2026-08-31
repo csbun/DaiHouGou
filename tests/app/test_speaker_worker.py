@@ -1,7 +1,7 @@
 import asyncio
 import threading
 
-from daihougou.rules import SpeechAction, WELCOME_RULE_ID
+from daihougou.rules import WELCOME_RULE_ID, SpeechAction
 from daihougou.speaker import SpeakResult
 from daihougou.speaker_worker import SpeakerManager
 from daihougou.storage import EventRecord
