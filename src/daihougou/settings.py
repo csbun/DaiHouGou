@@ -87,6 +87,10 @@ class Settings:
 
     @classmethod
     def from_mapping(cls, mapping: Mapping[str, str]) -> "Settings":
+        for legacy_key in ("MI_DID", "STREAM_URL"):
+            if legacy_key in mapping:
+                raise ValueError(f"{legacy_key} is not supported")
+
         person_threshold = _float_value(mapping, "PERSON_THRESHOLD", 0.55)
         if not 0 < person_threshold < 1:
             raise ValueError("PERSON_THRESHOLD must be between 0 and 1")

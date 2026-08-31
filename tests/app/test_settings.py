@@ -43,6 +43,14 @@ def test_settings_do_not_fall_back_to_mi_did() -> None:
         )
 
 
+@pytest.mark.parametrize("legacy_key", ["MI_DID", "STREAM_URL"])
+def test_settings_reject_legacy_mvp_keys_when_new_settings_are_present(
+    legacy_key: str,
+) -> None:
+    with pytest.raises(ValueError, match=f"^{legacy_key} is not supported$"):
+        Settings.from_mapping({**BASE_ENV, legacy_key: "legacy-value"})
+
+
 @pytest.mark.parametrize(
     ("speakers", "message"),
     [
