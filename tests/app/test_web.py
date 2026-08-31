@@ -1,137 +1,290 @@
-from pathlib import Path
-
+import pytest
 from fastapi.testclient import TestClient
 
-from daihougou.runtime import RuntimeSnapshot
-from daihougou.storage import EventRecord, Storage
+from daihougou.runtime import CameraView, RuntimeSnapshot, SpeakerOption
+from daihougou.storage import normalize_welcome_phrases
 from daihougou.web import create_app
 
 
+def snapshot_fixture(
+    camera_count: int,
+    camera_ids: tuple[str, ...] | None = None,
+) -> RuntimeSnapshot:
+    names = list(camera_ids) if camera_ids is not None else ["front", "back"] + [
+        f"camera_{number}" for number in range(3, camera_count + 1)
+    ]
+    cameras = tuple(
+        CameraView(
+            stream_id=name,
+            speaker_id="living_room",
+            speaker="客厅音箱",
+            available=True,
+            rule_enabled=True,
+            stream="ready",
+            detector="ready",
+            presence="absent",
+            last_confidence=0.1,
+            last_detection_latency_ms=4,
+            last_error="",
+            latest_trigger=None,
+        )
+        for name in names[:camera_count]
+    )
+    return RuntimeSnapshot(
+        app="running",
+        database="ready",
+        discovery="ready",
+        detector="ready" if cameras else "stopped",
+        speaker_auth="ready",
+        speakers=(SpeakerOption("living_room", "客厅音箱"),),
+        cameras=cameras,
+        events=(),
+        last_error="",
+    )
+
+
 class FakeRuntime:
-    def __init__(self) -> None:
-        self.started = False
-        self.stopped = False
+    def __init__(
+        self,
+        camera_count: int = 1,
+        camera_ids: tuple[str, ...] | None = None,
+    ) -> None:
+        self.refresh_calls = 0
+        self.rule_updates: list[tuple[str, bool]] = []
+        self.speaker_updates: list[tuple[str, str]] = []
+        self.phrase_updates: list[list[str]] = []
+        self._phrases = ("你好呀，欢迎回来。",)
+        self._snapshot = snapshot_fixture(camera_count, camera_ids)
 
     async def start(self) -> None:
-        self.started = True
+        pass
 
     async def stop(self) -> None:
-        self.stopped = True
+        pass
+
+    async def refresh_cameras(self) -> None:
+        self.refresh_calls += 1
+
+    async def set_rule_enabled(self, camera_id: str, enabled: bool) -> None:
+        if camera_id not in {camera.stream_id for camera in self._snapshot.cameras}:
+            raise KeyError(camera_id)
+        self.rule_updates.append((camera_id, enabled))
+
+    async def set_camera_speaker(self, camera_id: str, speaker_id: str) -> None:
+        if camera_id not in {camera.stream_id for camera in self._snapshot.cameras}:
+            raise KeyError(camera_id)
+        if speaker_id not in {speaker.id for speaker in self._snapshot.speakers}:
+            raise ValueError("unknown speaker")
+        self.speaker_updates.append((camera_id, speaker_id))
+
+    def welcome_phrases(self) -> tuple[str, ...]:
+        return self._phrases
+
+    def set_welcome_phrases(self, lines: list[str]) -> tuple[str, ...]:
+        normalized = normalize_welcome_phrases(lines)
+        self.phrase_updates.append(lines)
+        self._phrases = normalized
+        return normalized
 
     def snapshot(self) -> RuntimeSnapshot:
-        return RuntimeSnapshot(
-            app="running",
-            database="ready",
-            camera="degraded",
-            detector="starting",
-            speaker_auth="unknown",
-            presence="unknown",
-            last_sequence=0,
-            last_confidence=None,
-            last_detection_latency_ms=None,
-            last_error="camera_no_frames",
-        )
+        return self._snapshot
 
 
-def test_home_shows_status_and_disabled_rule(tmp_path: Path) -> None:
-    storage = Storage(tmp_path / "app.db")
-    runtime = FakeRuntime()
-
-    with TestClient(create_app(storage, runtime, csrf_token="fixed-token")) as client:
+def test_home_lists_cameras_global_phrases_and_safe_speakers() -> None:
+    runtime = FakeRuntime(camera_count=2)
+    with TestClient(create_app(runtime, csrf_token="fixed-token")) as client:
         response = client.get("/")
 
     assert response.status_code == 200
     assert "大口九" in response.text
-    assert "大吼狗" not in response.text
-    assert "人员进入欢迎" in response.text
-    assert "摄像头" in response.text
-    assert "已关闭" in response.text
+    assert "front" in response.text
+    assert "back" in response.text
+    assert "全局规则配置" in response.text
+    assert "你好呀，欢迎回来。" in response.text
+    assert "客厅音箱" in response.text
+    assert "123456789" not in response.text
     assert response.cookies["daihougou_csrf"] == "fixed-token"
-    assert runtime.started is True
-    assert runtime.stopped is True
 
 
-def test_healthz_reports_degraded_without_failing_web_process(tmp_path: Path) -> None:
-    with TestClient(
-        create_app(Storage(tmp_path / "app.db"), FakeRuntime(), csrf_token="fixed-token")
-    ) as client:
-        response = client.get("/healthz")
-
-    assert response.status_code == 200
-    assert response.json()["status"] == "degraded"
-    assert response.json()["camera"] == "degraded"
-
-
-def test_same_origin_form_with_csrf_can_enable_rule(tmp_path: Path) -> None:
-    storage = Storage(tmp_path / "app.db")
-    app = create_app(storage, FakeRuntime(), csrf_token="fixed-token")
-
-    with TestClient(app) as client:
+def test_manual_refresh_command_calls_runtime_once() -> None:
+    runtime = FakeRuntime()
+    with TestClient(create_app(runtime, csrf_token="fixed-token")) as client:
         client.get("/")
         response = client.post(
-            "/rules/welcome_on_person_entry/enable",
+            "/commands/refresh-cameras",
             data={"csrf_token": "fixed-token"},
             headers={"Origin": "http://testserver"},
             follow_redirects=False,
         )
 
     assert response.status_code == 303
-    assert storage.rule_enabled("welcome_on_person_entry") is True
-    assert storage.recent_events()[0].kind == "rule_enabled_changed"
+    assert runtime.refresh_calls == 1
 
 
-def test_home_shows_latest_rule_trigger_result(tmp_path: Path) -> None:
-    storage = Storage(tmp_path / "app.db")
-    storage.initialize()
-    storage.record_event(
-        EventRecord(
-            "speaker_completed",
-            True,
-            rule_id="welcome_on_person_entry",
-            latency_ms=321,
-        )
-    )
-
-    with TestClient(create_app(storage, FakeRuntime(), csrf_token="fixed-token")) as client:
-        response = client.get("/")
-
-    assert "最近触发：成功" in response.text
-    assert "321 ms" in response.text
-
-
-def test_rule_update_rejects_missing_csrf_and_cross_origin(tmp_path: Path) -> None:
-    storage = Storage(tmp_path / "app.db")
-    app = create_app(storage, FakeRuntime(), csrf_token="fixed-token")
-
-    with TestClient(app) as client:
+def test_rule_command_uses_hidden_camera_id_not_url_path() -> None:
+    runtime = FakeRuntime(camera_count=1, camera_ids=("room/a b",))
+    with TestClient(create_app(runtime, csrf_token="fixed-token")) as client:
         client.get("/")
-        no_token = client.post(
-            "/rules/welcome_on_person_entry/enable",
+        response = client.post(
+            "/commands/camera-rule",
+            data={
+                "csrf_token": "fixed-token",
+                "camera_id": "room/a b",
+                "enabled": "true",
+            },
+            headers={"Origin": "http://testserver"},
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 303
+    assert runtime.rule_updates == [("room/a b", True)]
+
+
+def test_camera_rule_and_speaker_commands_redirect_after_success() -> None:
+    runtime = FakeRuntime()
+    with TestClient(create_app(runtime, csrf_token="fixed-token")) as client:
+        client.get("/")
+        rule_response = client.post(
+            "/commands/camera-rule",
+            data={
+                "csrf_token": "fixed-token",
+                "camera_id": "front",
+                "enabled": "false",
+            },
+            headers={"Origin": "http://testserver"},
+            follow_redirects=False,
+        )
+        speaker_response = client.post(
+            "/commands/camera-speaker",
+            data={
+                "csrf_token": "fixed-token",
+                "camera_id": "front",
+                "speaker_id": "living_room",
+            },
+            headers={"Origin": "http://testserver"},
+            follow_redirects=False,
+        )
+
+    assert rule_response.status_code == 303
+    assert speaker_response.status_code == 303
+    assert runtime.rule_updates == [("front", False)]
+    assert runtime.speaker_updates == [("front", "living_room")]
+
+
+def test_invalid_welcome_phrases_render_error_without_writing() -> None:
+    runtime = FakeRuntime()
+    with TestClient(create_app(runtime, csrf_token="fixed-token")) as client:
+        client.get("/")
+        response = client.post(
+            "/commands/welcome-phrases",
+            data={"csrf_token": "fixed-token", "phrases": "\n\n"},
             headers={"Origin": "http://testserver"},
         )
-        wrong_origin = client.post(
-            "/rules/welcome_on_person_entry/enable",
-            data={"csrf_token": "fixed-token"},
+
+    assert response.status_code == 422
+    assert "至少填写一条欢迎词" in response.text
+    assert runtime.phrase_updates == []
+
+
+@pytest.mark.parametrize(
+    ("path", "data"),
+    [
+        ("/commands/refresh-cameras", {}),
+        ("/commands/camera-rule", {"camera_id": "front", "enabled": "true"}),
+        (
+            "/commands/camera-speaker",
+            {"camera_id": "front", "speaker_id": "living_room"},
+        ),
+        ("/commands/welcome-phrases", {"phrases": "你好"}),
+    ],
+)
+def test_all_commands_reject_missing_csrf(path: str, data: dict[str, str]) -> None:
+    runtime = FakeRuntime()
+    with TestClient(create_app(runtime, csrf_token="fixed-token")) as client:
+        client.get("/")
+        response = client.post(
+            path,
+            data=data,
+            headers={"Origin": "http://testserver"},
+        )
+
+    assert response.status_code == 403
+
+
+@pytest.mark.parametrize(
+    ("path", "data"),
+    [
+        ("/commands/refresh-cameras", {}),
+        ("/commands/camera-rule", {"camera_id": "front", "enabled": "true"}),
+        (
+            "/commands/camera-speaker",
+            {"camera_id": "front", "speaker_id": "living_room"},
+        ),
+        ("/commands/welcome-phrases", {"phrases": "你好"}),
+    ],
+)
+def test_all_commands_reject_cross_origin(path: str, data: dict[str, str]) -> None:
+    runtime = FakeRuntime()
+    with TestClient(create_app(runtime, csrf_token="fixed-token")) as client:
+        client.get("/")
+        response = client.post(
+            path,
+            data={**data, "csrf_token": "fixed-token"},
             headers={"Origin": "http://attacker.test"},
         )
 
-    assert no_token.status_code == 403
-    assert wrong_origin.status_code == 403
-    assert storage.rule_enabled("welcome_on_person_entry") is False
+    assert response.status_code == 403
 
 
-def test_unknown_rule_and_action_are_not_accepted(tmp_path: Path) -> None:
-    storage = Storage(tmp_path / "app.db")
-    app = create_app(storage, FakeRuntime(), csrf_token="fixed-token")
-
-    with TestClient(app) as client:
+def test_unknown_camera_and_speaker_return_not_found() -> None:
+    runtime = FakeRuntime()
+    with TestClient(create_app(runtime, csrf_token="fixed-token")) as client:
         client.get("/")
         headers = {"Origin": "http://testserver"}
-        data = {"csrf_token": "fixed-token"}
-        unknown_rule = client.post("/rules/other/enable", data=data, headers=headers)
-        unknown_action = client.post(
-            "/rules/welcome_on_person_entry/toggle", data=data, headers=headers
+        unknown_camera = client.post(
+            "/commands/camera-rule",
+            data={
+                "csrf_token": "fixed-token",
+                "camera_id": "missing",
+                "enabled": "true",
+            },
+            headers=headers,
+        )
+        unknown_speaker = client.post(
+            "/commands/camera-speaker",
+            data={
+                "csrf_token": "fixed-token",
+                "camera_id": "front",
+                "speaker_id": "missing",
+            },
+            headers=headers,
         )
 
-    assert unknown_rule.status_code == 404
-    assert unknown_action.status_code == 404
+    assert unknown_camera.status_code == 404
+    assert unknown_speaker.status_code == 404
+
+
+def test_four_enabled_cameras_show_resource_notice() -> None:
+    runtime = FakeRuntime(camera_count=4)
+    with TestClient(create_app(runtime, csrf_token="fixed-token")) as client:
+        response = client.get("/")
+
+    assert "已开启 4 路摄像头" in response.text
+    assert "仍可继续开启" in response.text
+
+
+def test_healthz_contains_counts_and_camera_states_without_private_data() -> None:
+    runtime = FakeRuntime(camera_count=2)
+    with TestClient(create_app(runtime, csrf_token="fixed-token")) as client:
+        response = client.get("/healthz")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["saved_camera_count"] == 2
+    assert body["discovered_camera_count"] == 2
+    assert body["enabled_camera_count"] == 2
+    assert body["cameras"][0]["stream_id"] == "front"
+    serialized = response.text
+    assert "你好呀，欢迎回来。" not in serialized
+    assert "secret" not in serialized
+    assert "did" not in serialized.lower()

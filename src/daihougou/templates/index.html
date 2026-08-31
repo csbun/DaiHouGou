@@ -8,64 +8,141 @@
   </head>
   <body>
     <header class="topbar">
-      <div>
-        <p class="eyebrow">家庭陪护</p>
+      <div class="brand">
+        <p>家庭儿童陪护</p>
         <h1>大口九</h1>
       </div>
       <span class="overall status status-{{ snapshot.overall }}">
-        {{ '运行正常' if snapshot.overall == 'ready' else '需要检查' }}
+        {% if snapshot.overall == 'ready' %}运行正常
+        {% elif snapshot.overall == 'unhealthy' %}运行异常
+        {% else %}需要检查{% endif %}
       </span>
     </header>
 
     <main>
-      <section aria-labelledby="device-status">
-        <h2 id="device-status">运行状态</h2>
+      <section aria-labelledby="status-title">
+        <h2 id="status-title">运行状态</h2>
         <dl class="status-grid">
           <div><dt>应用</dt><dd>{{ snapshot.app }}</dd></div>
-          <div><dt>摄像头</dt><dd>{{ snapshot.camera }}</dd></div>
+          <div><dt>数据库</dt><dd>{{ snapshot.database }}</dd></div>
+          <div><dt>设备发现</dt><dd>{{ snapshot.discovery }}</dd></div>
           <div><dt>检测器</dt><dd>{{ snapshot.detector }}</dd></div>
           <div><dt>音箱认证</dt><dd>{{ snapshot.speaker_auth }}</dd></div>
-          <div><dt>画面状态</dt><dd>{{ snapshot.presence }}</dd></div>
           <div>
-            <dt>检测置信度</dt>
-            <dd>
-              {{ '%.2f'|format(snapshot.last_confidence)
-                 if snapshot.last_confidence is not none else '—' }}
-            </dd>
+            <dt>摄像头</dt>
+            <dd>{{ snapshot.enabled_camera_count }} 已开启 / {{ snapshot.saved_camera_count }} 已保存</dd>
           </div>
         </dl>
       </section>
 
-      <section aria-labelledby="rules-title">
-        <h2 id="rules-title">规则</h2>
-        <div class="rule-row">
+      <section aria-labelledby="global-rule-title">
+        <h2 id="global-rule-title">全局规则配置</h2>
+        <form class="phrase-form" method="post" action="/commands/welcome-phrases">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <label for="welcome-phrases">欢迎词（每行一条）</label>
+          <textarea
+            id="welcome-phrases"
+            name="phrases"
+            rows="6"
+            aria-describedby="phrase-error"
+            {% if phrase_error %}aria-invalid="true"{% endif %}
+          >{{ phrases_text }}</textarea>
+          <div class="form-actions">
+            <p id="phrase-error" class="field-error">{{ phrase_error }}</p>
+            <button class="button primary" type="submit">保存欢迎词</button>
+          </div>
+        </form>
+      </section>
+
+      <section aria-labelledby="cameras-title">
+        <div class="section-header">
           <div>
-            <h3>人员进入欢迎</h3>
-            <p>
-              {{ '已开启' if rule_enabled else '已关闭' }}
-              {% if latest_rule_trigger %}
-                · 最近触发：{{ '成功' if latest_rule_trigger.success else '未完成' }}
-                {% if latest_rule_trigger.latency_ms is not none %}
-                  · {{ latest_rule_trigger.latency_ms }} ms
-                {% endif %}
-              {% else %}
-                · 尚未触发
-              {% endif %}
+            <h2 id="cameras-title">摄像头</h2>
+            <p class="section-meta">
+              {{ snapshot.discovered_camera_count }} 路可用，{{ snapshot.ready_camera_count }} 路就绪
             </p>
           </div>
-          <form method="post" action="/rules/{{ rule_id }}/{{ 'disable' if rule_enabled else 'enable' }}">
+          <form method="post" action="/commands/refresh-cameras">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-            <label class="switch">
-              <span class="sr-only">{{ '关闭' if rule_enabled else '开启' }}人员进入欢迎</span>
-              <input
-                type="checkbox"
-                {% if rule_enabled %}checked{% endif %}
+            <button class="button secondary" type="submit">刷新摄像头</button>
+          </form>
+        </div>
+
+        {% if snapshot.resource_warning %}
+        <p class="resource-notice" role="status">
+          已开启 {{ snapshot.enabled_camera_count }} 路摄像头，当前服务器负载可能升高；仍可继续开启。
+        </p>
+        {% endif %}
+
+        <div class="camera-list">
+          {% for camera in snapshot.cameras %}
+          <article class="camera-row">
+            <div class="camera-identity">
+              <h3>{{ camera.stream_id }}</h3>
+              <span class="availability availability-{% if camera.available is sameas true %}online{% elif camera.available is sameas false %}offline{% else %}unknown{% endif %}">
+                {% if camera.available is sameas true %}已发现
+                {% elif camera.available is sameas false %}未发现
+                {% else %}状态未知{% endif %}
+              </span>
+            </div>
+
+            <dl class="camera-statuses">
+              <div><dt>视频流</dt><dd>{{ camera.stream }}</dd></div>
+              <div><dt>检测</dt><dd>{{ camera.detector }}</dd></div>
+              <div><dt>画面</dt><dd>{{ camera.presence }}</dd></div>
+            </dl>
+
+            <form class="rule-switch" method="post" action="/commands/camera-rule">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <input type="hidden" name="camera_id" value="{{ camera.stream_id }}">
+              <input type="hidden" name="enabled" value="{{ 'false' if camera.rule_enabled else 'true' }}">
+              <span class="control-label">欢迎规则</span>
+              <label class="switch">
+                <span class="sr-only">{{ '关闭' if camera.rule_enabled else '开启' }} {{ camera.stream_id }} 欢迎规则</span>
+                <input
+                  type="checkbox"
+                  {% if camera.rule_enabled %}checked{% endif %}
+                  onchange="this.form.requestSubmit()"
+                >
+                <span class="track" aria-hidden="true"></span>
+              </label>
+              <noscript><button type="submit">{{ '关闭' if camera.rule_enabled else '开启' }}</button></noscript>
+            </form>
+
+            <form class="speaker-form" method="post" action="/commands/camera-speaker">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <input type="hidden" name="camera_id" value="{{ camera.stream_id }}">
+              <label for="speaker-{{ loop.index }}">播放音箱</label>
+              <select
+                id="speaker-{{ loop.index }}"
+                name="speaker_id"
                 onchange="this.form.requestSubmit()"
               >
-              <span class="track" aria-hidden="true"></span>
-            </label>
-            <noscript><button type="submit">{{ '关闭' if rule_enabled else '开启' }}</button></noscript>
-          </form>
+                {% for speaker in snapshot.speakers %}
+                <option value="{{ speaker.id }}" {% if speaker.id == camera.speaker_id %}selected{% endif %}>
+                  {{ speaker.name }}
+                </option>
+                {% endfor %}
+              </select>
+              <button class="sr-only" type="submit">保存播放音箱</button>
+            </form>
+
+            <div class="latest-result">
+              <span class="control-label">最近触发</span>
+              {% if camera.latest_trigger %}
+              <strong>{{ '成功' if camera.latest_trigger.success else '未完成' }}</strong>
+              <span>
+                {{ camera.latest_trigger.latency_ms ~ ' ms'
+                   if camera.latest_trigger.latency_ms is not none else camera.latest_trigger.kind }}
+              </span>
+              {% else %}
+              <strong>尚未触发</strong>
+              {% endif %}
+            </div>
+          </article>
+          {% else %}
+          <p class="empty-state">尚未发现摄像头</p>
+          {% endfor %}
         </div>
       </section>
 
@@ -74,18 +151,22 @@
         <div class="table-wrap">
           <table>
             <thead>
-              <tr><th>时间</th><th>事件</th><th>结果</th><th>耗时</th></tr>
+              <tr>
+                <th>时间</th><th>摄像头</th><th>音箱</th><th>事件</th><th>结果</th><th>耗时</th>
+              </tr>
             </thead>
             <tbody>
-              {% for event in events %}
+              {% for event in snapshot.events %}
               <tr>
                 <td>{{ event.occurred_at[:19].replace('T', ' ') }}</td>
+                <td>{{ event.camera_id or '—' }}</td>
+                <td>{{ event.speaker_id or '—' }}</td>
                 <td>{{ event.kind }}</td>
                 <td>{{ '成功' if event.success else '未完成' }}</td>
                 <td>{{ event.latency_ms ~ ' ms' if event.latency_ms is not none else '—' }}</td>
               </tr>
               {% else %}
-              <tr><td colspan="4" class="empty">暂无记录</td></tr>
+              <tr><td colspan="6" class="empty">暂无记录</td></tr>
               {% endfor %}
             </tbody>
           </table>

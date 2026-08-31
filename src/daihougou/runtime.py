@@ -178,7 +178,7 @@ class Runtime:
 
     async def stop(self) -> None:
         async with self._lock:
-            for stream_id in sorted(tuple(self._camera_runtimes)):
+            for stream_id in sorted(self._camera_runtimes):
                 camera = self._camera_runtimes.pop(stream_id)
                 await camera.stop()
             if self._scheduler.loaded:
@@ -193,7 +193,7 @@ class Runtime:
             except DiscoveryError as error:
                 self._discovery_status = "degraded"
                 self._last_error = str(error)
-            except Exception:
+            except Exception:  # noqa: BLE001 - adapters may expose varied transport errors.
                 self._discovery_status = "degraded"
                 self._last_error = "go2rtc_unavailable"
             else:
