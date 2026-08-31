@@ -140,9 +140,8 @@ class ObjectDetector:
         self._probability_threshold = probability_threshold
         self._iou_threshold = iou_threshold
         self._net = net if net is not None else cv2.dnn.readNetFromONNX(str(model))
-        if net is None:
-            self._net.setPreferableBackend(cv2.dnn.DNN_BACKEND_OPENCV)
-            self._net.setPreferableTarget(cv2.dnn.DNN_TARGET_CPU)
+        self._net.setPreferableBackend(cv2.dnn.DNN_BACKEND_OPENCV)
+        self._net.setPreferableTarget(cv2.dnn.DNN_TARGET_CPU)
         self._output_names = tuple(self._net.getUnconnectedOutLayersNames())
         self._project = np.arange(self.reg_max + 1, dtype=np.float32)
         self._mean = np.array([103.53, 116.28, 123.675], dtype=np.float32).reshape(1, 1, 3)
@@ -232,6 +231,13 @@ class ObjectDetector:
             distributions = (
                 np.squeeze(distributions, axis=0) if distributions.ndim == 3 else distributions
             )
+            nms_pre = 1000
+            if scores.shape[0] > nms_pre:
+                max_scores = scores.max(axis=1)
+                topk_indices = max_scores.argsort()[::-1][:nms_pre]
+                anchors = anchors[topk_indices]
+                distributions = distributions[topk_indices]
+                scores = scores[topk_indices]
             probabilities = np.exp(distributions.reshape(-1, self.reg_max + 1))
             probabilities /= probabilities.sum(axis=1, keepdims=True)
             distances = probabilities.dot(self._project).reshape(-1, 4) * stride

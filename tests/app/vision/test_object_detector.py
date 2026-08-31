@@ -1,3 +1,4 @@
+import cv2
 import numpy as np
 import pytest
 
@@ -8,9 +9,17 @@ class FakeNet:
     def __init__(self, outputs: tuple[np.ndarray, ...]) -> None:
         self.outputs = outputs
         self.input: np.ndarray | None = None
+        self.backend_ids: list[int] = []
+        self.target_ids: list[int] = []
 
     def setInput(self, blob: np.ndarray) -> None:
         self.input = blob
+
+    def setPreferableBackend(self, backend_id: int) -> None:
+        self.backend_ids.append(backend_id)
+
+    def setPreferableTarget(self, target_id: int) -> None:
+        self.target_ids.append(target_id)
 
     def getUnconnectedOutLayersNames(self) -> tuple[str, ...]:
         return tuple(str(index) for index in range(8))
@@ -98,3 +107,31 @@ def test_detector_suppresses_overlapping_boxes_with_nms() -> None:
 
     assert len(result.objects) == 1
     assert result.objects[0].label == "cat"
+
+
+def test_detector_keeps_only_top_thousand_candidates_per_level_before_nms() -> None:
+    outputs = list(nanodet_outputs())
+    scores = outputs[0].copy()
+    boxes = outputs[1].copy()
+    scores[0, :, :] = 0.0
+    scores[0, :1000, 15] = 0.9
+    scores[0, 1000, 16] = 0.89
+    boxes[0, :, :] = 0.0
+    boxes[0, :, [1, 9, 17, 25]] = 20.0
+    outputs[0] = scores
+    outputs[1] = boxes
+
+    result = ObjectDetector(model=None, net=FakeNet(tuple(outputs))).detect(
+        np.zeros((416, 416, 3), dtype=np.uint8)
+    )
+
+    assert "dog" not in tuple(item.label for item in result.objects)
+
+
+def test_detector_configures_injected_network_for_opencv_cpu() -> None:
+    net = FakeNet(nanodet_outputs())
+
+    ObjectDetector(model=None, net=net)
+
+    assert net.backend_ids == [cv2.dnn.DNN_BACKEND_OPENCV]
+    assert net.target_ids == [cv2.dnn.DNN_TARGET_CPU]
