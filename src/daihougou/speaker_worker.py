@@ -1,4 +1,7 @@
+from __future__ import annotations
+
 import asyncio
+from collections.abc import Mapping
 from typing import Protocol
 
 from daihougou.rules import SpeechAction
@@ -7,83 +10,138 @@ from daihougou.storage import EventRecord
 
 
 class WorkerStorage(Protocol):
-    def rule_enabled(self, rule_id: str) -> bool: ...
+    def camera_rule_enabled(self, camera_id: str, rule_id: str) -> bool: ...
+
+    def camera_speaker_id(self, camera_id: str) -> str: ...
 
     def record_event(self, event: EventRecord) -> None: ...
 
 
-class SpeakerWorker:
-    def __init__(self, speaker: Speaker, storage: WorkerStorage, queue_size: int = 4) -> None:
-        self._speaker = speaker
+class SpeakerManager:
+    def __init__(
+        self,
+        speakers: Mapping[str, Speaker],
+        storage: WorkerStorage,
+        queue_size: int = 4,
+    ) -> None:
+        self._speakers = dict(speakers)
         self._storage = storage
-        self._queue: asyncio.Queue[SpeechAction | None] = asyncio.Queue(maxsize=queue_size)
-        self._task: asyncio.Task[None] | None = None
+        self._queues = {
+            speaker_id: asyncio.Queue[SpeechAction | None](maxsize=queue_size)
+            for speaker_id in self._speakers
+        }
+        self._tasks: dict[str, asyncio.Task[None]] = {}
         self.auth_status = "unknown"
         self.fatal_error = False
+        self.speaker_statuses = {speaker_id: "unknown" for speaker_id in self._speakers}
 
     async def start(self) -> None:
-        if self._task is None:
-            self.fatal_error = False
-            self._task = asyncio.create_task(self._consume(), name="speaker-worker")
-            self._task.add_done_callback(self._record_task_result)
+        if self._tasks:
+            return
+        self.fatal_error = False
+        for speaker_id, speaker in self._speakers.items():
+            task = asyncio.create_task(
+                self._consume(speaker_id, speaker),
+                name=f"speaker-worker-{speaker_id}",
+            )
+            task.add_done_callback(self._record_task_result)
+            self._tasks[speaker_id] = task
 
     def submit(self, action: SpeechAction) -> bool:
         if self.auth_status == "reauth_required" or self.fatal_error:
             return False
+        queue = self._queues.get(action.speaker_id)
+        if queue is None:
+            self._record(action, "speaker_unknown", False)
+            return False
         try:
-            self._queue.put_nowait(action)
+            queue.put_nowait(action)
             return True
         except asyncio.QueueFull:
-            self._storage.record_event(
-                EventRecord("speaker_queue_full", False, rule_id=action.rule_id)
-            )
+            self._record(action, "speaker_queue_full", False)
             return False
 
     async def join(self) -> None:
-        await self._queue.join()
+        await asyncio.gather(*(queue.join() for queue in self._queues.values()))
 
     async def stop(self) -> None:
-        if self._task is None:
+        if not self._tasks:
             return
-        task = self._task
-        if not task.done():
-            await self._queue.put(None)
-        await asyncio.gather(task, return_exceptions=True)
-        self._task = None
+        tasks = tuple(self._tasks.values())
+        for speaker_id, task in self._tasks.items():
+            if not task.done():
+                await self._queues[speaker_id].put(None)
+        await asyncio.gather(*tasks, return_exceptions=True)
+        self._tasks.clear()
 
     def _record_task_result(self, task: asyncio.Task[None]) -> None:
-        if task.cancelled():
-            return
-        self.fatal_error = task.exception() is not None
+        if not task.cancelled() and task.exception() is not None:
+            self.fatal_error = True
 
-    async def _consume(self) -> None:
+    async def _consume(self, speaker_id: str, speaker: Speaker) -> None:
+        queue = self._queues[speaker_id]
         while True:
-            action = await self._queue.get()
+            action = await queue.get()
             try:
                 if action is None:
                     return
-                if not self._storage.rule_enabled(action.rule_id):
-                    self._storage.record_event(
-                        EventRecord("speaker_skipped_disabled", False, rule_id=action.rule_id)
-                    )
-                    continue
                 if self.auth_status == "reauth_required":
-                    self._storage.record_event(
-                        EventRecord("speaker_reauth_required", False, rule_id=action.rule_id)
-                    )
+                    self._record(action, "speaker_reauth_required", False)
                     continue
-                result = await asyncio.to_thread(self._speaker.speak, action.text)
-                self.auth_status = (
-                    "reauth_required" if result.code == "reauth_required" else "ready"
-                )
-                self._storage.record_event(
-                    EventRecord(
-                        "speaker_completed",
-                        result.success,
-                        rule_id=action.rule_id,
+                if not self._storage.camera_rule_enabled(
+                    action.camera_id, action.rule_id
+                ):
+                    self._record(action, "speaker_skipped_disabled", False)
+                    continue
+                if self._storage.camera_speaker_id(action.camera_id) != action.speaker_id:
+                    self._record(action, "speaker_skipped_pairing_changed", False)
+                    continue
+
+                result = await asyncio.to_thread(speaker.speak, action.text)
+                if result.code == "reauth_required":
+                    self.auth_status = "reauth_required"
+                    self.speaker_statuses[speaker_id] = "reauth_required"
+                    self._record(
+                        action,
+                        "speaker_reauth_required",
+                        False,
                         latency_ms=result.latency_ms,
                         details={"code": result.code},
                     )
+                    continue
+
+                if self.auth_status != "reauth_required":
+                    self.auth_status = "ready"
+                self.speaker_statuses[speaker_id] = (
+                    "ready" if result.success else "degraded"
+                )
+                self._record(
+                    action,
+                    "speaker_completed",
+                    result.success,
+                    latency_ms=result.latency_ms,
+                    details={"code": result.code},
                 )
             finally:
-                self._queue.task_done()
+                queue.task_done()
+
+    def _record(
+        self,
+        action: SpeechAction,
+        kind: str,
+        success: bool,
+        *,
+        latency_ms: int | None = None,
+        details: dict[str, object] | None = None,
+    ) -> None:
+        self._storage.record_event(
+            EventRecord(
+                kind,
+                success,
+                rule_id=action.rule_id,
+                camera_id=action.camera_id,
+                speaker_id=action.speaker_id,
+                latency_ms=latency_ms,
+                details=details or {},
+            )
+        )
