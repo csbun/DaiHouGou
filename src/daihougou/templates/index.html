@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>大口九</title>
     <link rel="stylesheet" href="{{ url_for('static', path='/app.css') }}">
+    <script src="{{ url_for('static', path='/app.js') }}" defer></script>
   </head>
   <body>
     <header class="topbar">
@@ -12,11 +13,14 @@
         <p>家庭儿童陪护</p>
         <h1>大口九</h1>
       </div>
-      <span class="overall status status-{{ snapshot.overall }}">
-        {% if snapshot.overall == 'ready' %}运行正常
-        {% elif snapshot.overall == 'unhealthy' %}运行异常
-        {% else %}需要检查{% endif %}
-      </span>
+      <div class="topbar-actions">
+        <a class="topbar-link" href="/settings">设置</a>
+        <span class="overall status status-{{ snapshot.overall }}">
+          {% if snapshot.overall == 'ready' %}运行正常
+          {% elif snapshot.overall == 'unhealthy' %}运行异常
+          {% else %}需要检查{% endif %}
+        </span>
+      </div>
     </header>
 
     <main>
@@ -30,28 +34,9 @@
           <div><dt>音箱认证</dt><dd>{{ snapshot.speaker_auth }}</dd></div>
           <div>
             <dt>摄像头</dt>
-            <dd>{{ snapshot.enabled_camera_count }} 已开启 / {{ snapshot.saved_camera_count }} 已保存</dd>
+            <dd><span data-enabled-camera-count>{{ snapshot.enabled_camera_count }}</span> 已开启 / {{ snapshot.saved_camera_count }} 已保存</dd>
           </div>
         </dl>
-      </section>
-
-      <section aria-labelledby="global-rule-title">
-        <h2 id="global-rule-title">全局规则配置</h2>
-        <form class="phrase-form" method="post" action="/commands/welcome-phrases">
-          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-          <label for="welcome-phrases">欢迎词（每行一条）</label>
-          <textarea
-            id="welcome-phrases"
-            name="phrases"
-            rows="6"
-            aria-describedby="phrase-error"
-            {% if phrase_error %}aria-invalid="true"{% endif %}
-          >{{ phrases_text }}</textarea>
-          <div class="form-actions">
-            <p id="phrase-error" class="field-error">{{ phrase_error }}</p>
-            <button class="button primary" type="submit">保存欢迎词</button>
-          </div>
-        </form>
       </section>
 
       <section aria-labelledby="cameras-title">
@@ -59,7 +44,7 @@
           <div>
             <h2 id="cameras-title">摄像头</h2>
             <p class="section-meta">
-              {{ snapshot.discovered_camera_count }} 路可用，{{ snapshot.ready_camera_count }} 路就绪
+              {{ snapshot.discovered_camera_count }} 路可用，<span data-ready-camera-count>{{ snapshot.ready_camera_count }}</span> 路就绪
             </p>
           </div>
           <form method="post" action="/commands/refresh-cameras">
@@ -68,15 +53,13 @@
           </form>
         </div>
 
-        {% if snapshot.resource_warning %}
-        <p class="resource-notice" role="status">
+        <p class="resource-notice" role="status" data-resource-notice {% if not snapshot.resource_warning %}hidden{% endif %}>
           已开启 {{ snapshot.enabled_camera_count }} 路摄像头，当前服务器负载可能升高；仍可继续开启。
         </p>
-        {% endif %}
 
         <div class="camera-list">
           {% for camera in snapshot.cameras %}
-          <article class="camera-row">
+          <article class="camera-row" data-camera-row data-camera-id="{{ camera.stream_id }}">
             <div class="camera-identity">
               <h3>{{ camera.stream_id }}</h3>
               <span class="availability availability-{% if camera.available is sameas true %}online{% elif camera.available is sameas false %}offline{% else %}unknown{% endif %}">
@@ -87,25 +70,26 @@
             </div>
 
             <dl class="camera-statuses">
-              <div><dt>视频流</dt><dd>{{ camera.stream }}</dd></div>
-              <div><dt>检测</dt><dd>{{ camera.detector }}</dd></div>
-              <div><dt>画面</dt><dd>{{ camera.presence }}</dd></div>
+              <div><dt>视频流</dt><dd data-camera-state="stream">{% if camera.rule_enabled %}{{ camera.stream }}{% else %}未启动（规则关闭）{% endif %}</dd></div>
+              <div><dt>检测</dt><dd data-camera-state="detector">{{ camera.detector }}</dd></div>
+              <div><dt>画面</dt><dd data-camera-state="presence">{{ camera.presence }}</dd></div>
             </dl>
 
-            <form class="rule-switch" method="post" action="/commands/camera-rule">
+            <form class="rule-switch" method="post" action="/commands/camera-rule" data-rule-switch>
               <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
               <input type="hidden" name="camera_id" value="{{ camera.stream_id }}">
-              <input type="hidden" name="enabled" value="{{ 'false' if camera.rule_enabled else 'true' }}">
+              <input type="hidden" name="enabled" value="{{ 'false' if camera.rule_enabled else 'true' }}" data-rule-enabled>
               <span class="control-label">欢迎规则</span>
               <label class="switch">
                 <span class="sr-only">{{ '关闭' if camera.rule_enabled else '开启' }} {{ camera.stream_id }} 欢迎规则</span>
                 <input
                   type="checkbox"
+                  data-rule-checkbox
                   {% if camera.rule_enabled %}checked{% endif %}
-                  onchange="this.form.requestSubmit()"
                 >
                 <span class="track" aria-hidden="true"></span>
               </label>
+              <span class="rule-feedback" role="status" aria-live="polite"></span>
               <noscript><button type="submit">{{ '关闭' if camera.rule_enabled else '开启' }}</button></noscript>
             </form>
 

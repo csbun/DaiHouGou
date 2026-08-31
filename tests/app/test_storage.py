@@ -7,6 +7,24 @@ import pytest
 from daihougou.rules import WELCOME_PHRASES, WELCOME_RULE_ID
 from daihougou.storage import SCHEMA_VERSION, EventRecord, IncompatibleSchemaError, Storage
 
+EXPECTED_ENGLISH_WELCOME_PHRASES = (
+    "Welcome home!",
+    "Hi there, welcome back!",
+    "It's great to see you!",
+    "Hello! We're happy you're here.",
+    "Welcome! Hope you're having a great day.",
+    "Hi! Nice to see you again.",
+    "You're home! Welcome back.",
+    "Hello there! Make yourself at home.",
+    "Welcome back! We missed you.",
+    "Hey! So good to see you.",
+)
+LEGACY_WELCOME_PHRASES = (
+    "你好呀，欢迎回来。",
+    "嗨，很高兴见到你。",
+    "欢迎你，今天也要开心呀。",
+)
+
 
 def test_new_database_has_v2_schema_and_default_welcome_phrases(tmp_path: Path) -> None:
     storage = Storage(tmp_path / "app.db")
@@ -15,7 +33,24 @@ def test_new_database_has_v2_schema_and_default_welcome_phrases(tmp_path: Path) 
     with sqlite3.connect(tmp_path / "app.db") as connection:
         version = connection.execute("PRAGMA user_version").fetchone()[0]
     assert version == SCHEMA_VERSION == 2
-    assert storage.welcome_phrases() == WELCOME_PHRASES
+    assert storage.welcome_phrases() == EXPECTED_ENGLISH_WELCOME_PHRASES
+    assert WELCOME_PHRASES == EXPECTED_ENGLISH_WELCOME_PHRASES
+
+
+def test_initialize_upgrades_only_legacy_default_welcome_phrases(tmp_path: Path) -> None:
+    legacy = Storage(tmp_path / "legacy.db")
+    legacy.initialize()
+    legacy.set_welcome_phrases(LEGACY_WELCOME_PHRASES)
+
+    customized = Storage(tmp_path / "customized.db")
+    customized.initialize()
+    customized.set_welcome_phrases(("Our own welcome!",))
+
+    legacy.initialize()
+    customized.initialize()
+
+    assert legacy.welcome_phrases() == EXPECTED_ENGLISH_WELCOME_PHRASES
+    assert customized.welcome_phrases() == ("Our own welcome!",)
 
 
 def test_existing_v1_tables_are_rejected_without_mutation(tmp_path: Path) -> None:

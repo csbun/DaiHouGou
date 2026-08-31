@@ -7,9 +7,16 @@ from daihougou.presence import PresenceEvent, PresenceEventKind
 
 WELCOME_RULE_ID = "welcome_on_person_entry"
 WELCOME_PHRASES = (
-    "你好呀，欢迎回来。",
-    "嗨，很高兴见到你。",
-    "欢迎你，今天也要开心呀。",
+    "Welcome home!",
+    "Hi there, welcome back!",
+    "It's great to see you!",
+    "Hello! We're happy you're here.",
+    "Welcome! Hope you're having a great day.",
+    "Hi! Nice to see you again.",
+    "You're home! Welcome back.",
+    "Hello there! Make yourself at home.",
+    "Welcome back! We missed you.",
+    "Hey! So good to see you.",
 )
 
 

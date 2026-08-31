@@ -7,7 +7,7 @@ from typing import Protocol
 from urllib.parse import urlsplit
 
 from fastapi import FastAPI, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -76,6 +76,19 @@ def create_app(runtime: ManagedRuntime, csrf_token: str | None = None) -> FastAP
 
     def render_home(
         request: Request,
+    ) -> HTMLResponse:
+        response = templates.TemplateResponse(
+            request=request,
+            name="index.html",
+            context={
+                "snapshot": runtime.snapshot(),
+                "csrf_token": token,
+            },
+        )
+        return prepare_html(response)
+
+    def render_settings(
+        request: Request,
         *,
         phrases_text: str | None = None,
         phrase_error: str = "",
@@ -83,9 +96,8 @@ def create_app(runtime: ManagedRuntime, csrf_token: str | None = None) -> FastAP
     ) -> HTMLResponse:
         response = templates.TemplateResponse(
             request=request,
-            name="index.html",
+            name="settings.html",
             context={
-                "snapshot": runtime.snapshot(),
                 "phrases_text": (
                     phrases_text
                     if phrases_text is not None
@@ -96,6 +108,9 @@ def create_app(runtime: ManagedRuntime, csrf_token: str | None = None) -> FastAP
             },
             status_code=status_code,
         )
+        return prepare_html(response)
+
+    def prepare_html(response: HTMLResponse) -> HTMLResponse:
         response.set_cookie(
             "daihougou_csrf",
             token,
@@ -110,6 +125,10 @@ def create_app(runtime: ManagedRuntime, csrf_token: str | None = None) -> FastAP
     @app.get("/", response_class=HTMLResponse)
     async def home(request: Request) -> HTMLResponse:
         return render_home(request)
+
+    @app.get("/settings", response_class=HTMLResponse)
+    async def settings(request: Request) -> HTMLResponse:
+        return render_settings(request)
 
     @app.post("/commands/refresh-cameras")
     async def refresh_cameras(
@@ -126,7 +145,7 @@ def create_app(runtime: ManagedRuntime, csrf_token: str | None = None) -> FastAP
         csrf_token: str = Form(default=""),
         camera_id: str = Form(default=""),
         enabled: str = Form(default=""),
-    ) -> RedirectResponse:
+    ) -> Response:
         _verify_write_request(request, csrf_token, token)
         if enabled not in {"true", "false"}:
             raise HTTPException(status_code=400, detail="invalid_rule_state")
@@ -134,6 +153,19 @@ def create_app(runtime: ManagedRuntime, csrf_token: str | None = None) -> FastAP
             await runtime.set_rule_enabled(camera_id, enabled == "true")
         except KeyError as error:
             raise HTTPException(status_code=404, detail="unknown_camera") from error
+        if "application/json" in request.headers.get("accept", ""):
+            snapshot = runtime.snapshot()
+            camera = next(
+                camera for camera in snapshot.cameras if camera.stream_id == camera_id
+            )
+            return JSONResponse(
+                {
+                    "camera": camera.health_dict(),
+                    "enabled_camera_count": snapshot.enabled_camera_count,
+                    "ready_camera_count": snapshot.ready_camera_count,
+                    "resource_warning": snapshot.resource_warning,
+                }
+            )
         return RedirectResponse("/", status_code=303)
 
     @app.post("/commands/camera-speaker")
@@ -160,13 +192,13 @@ def create_app(runtime: ManagedRuntime, csrf_token: str | None = None) -> FastAP
         try:
             runtime.set_welcome_phrases(phrases.splitlines())
         except ValueError as error:
-            return render_home(
+            return render_settings(
                 request,
                 phrases_text=phrases,
                 phrase_error=_phrase_error(error),
                 status_code=422,
             )
-        return RedirectResponse("/", status_code=303)
+        return RedirectResponse("/settings", status_code=303)
 
     @app.get("/healthz")
     async def healthz() -> dict[str, object]:

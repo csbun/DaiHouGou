@@ -55,6 +55,29 @@ h3 {
   font-size: 13px;
 }
 
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.topbar-link {
+  min-height: 38px;
+  padding: 8px 11px;
+  display: inline-flex;
+  align-items: center;
+  color: #fff;
+  border: 1px solid #606970;
+  border-radius: 4px;
+  font-size: 14px;
+  font-weight: 650;
+  text-decoration: none;
+}
+
+.topbar-link:hover {
+  background: #343a3f;
+}
+
 main {
   max-width: 1120px;
   margin: 0 auto;
@@ -131,6 +154,14 @@ dd {
 
 .phrase-form {
   max-width: 760px;
+}
+
+.settings-main {
+  max-width: 860px;
+}
+
+.settings-section h3 {
+  margin-bottom: 18px;
 }
 
 .phrase-form label {
@@ -363,6 +394,17 @@ textarea[aria-invalid="true"] {
   outline-offset: 2px;
 }
 
+.switch input:disabled + .track {
+  cursor: wait;
+  opacity: 0.55;
+}
+
+.rule-feedback {
+  min-height: 16px;
+  color: #a1261c;
+  font-size: 12px;
+}
+
 .speaker-form {
   display: grid;
   gap: 7px;
@@ -449,6 +491,10 @@ tbody tr:last-child td {
     padding: 15px 18px;
   }
 
+  .topbar-actions {
+    gap: 8px;
+  }
+
   main {
     padding: 16px 18px 40px;
   }
@@ -511,6 +557,11 @@ tbody tr:last-child td {
 
   .overall {
     min-width: 78px;
+  }
+
+  .topbar-link {
+    min-height: 34px;
+    padding: 6px 9px;
   }
 
   .form-actions,

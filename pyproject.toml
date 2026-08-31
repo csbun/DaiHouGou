@@ -27,7 +27,7 @@ daihougou = "daihougou.main:run"
 where = ["src"]
 
 [tool.setuptools.package-data]
-daihougou = ["templates/*.html", "static/*.css"]
+daihougou = ["templates/*.html", "static/*.css", "static/*.js"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>设置 - 大口九</title>
+    <link rel="stylesheet" href="{{ url_for('static', path='/app.css') }}">
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <p>家庭儿童陪护</p>
+        <h1>大口九</h1>
+      </div>
+      <a class="topbar-link" href="/">返回管理页</a>
+    </header>
+
+    <main class="settings-main">
+      <section aria-labelledby="settings-title">
+        <h2 id="settings-title">设置</h2>
+        <div class="settings-section">
+          <h3>欢迎规则</h3>
+          <form class="phrase-form" method="post" action="/commands/welcome-phrases">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <label for="welcome-phrases">欢迎词（每行一条）</label>
+            <textarea
+              id="welcome-phrases"
+              name="phrases"
+              rows="10"
+              aria-describedby="phrase-error"
+              {% if phrase_error %}aria-invalid="true"{% endif %}
+            >{{ phrases_text }}</textarea>
+            <div class="form-actions">
+              <p id="phrase-error" class="field-error">{{ phrase_error }}</p>
+              <button class="button primary" type="submit">保存欢迎词</button>
+            </div>
+          </form>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

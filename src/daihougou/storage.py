@@ -13,6 +13,11 @@ from daihougou.rules import WELCOME_PHRASES, WELCOME_RULE_ID
 
 SCHEMA_VERSION = 2
 _SCHEMA_TABLES = frozenset({"camera_rules", "cameras", "events", "rule_configs"})
+_LEGACY_WELCOME_PHRASES = (
+    "你好呀，欢迎回来。",
+    "嗨，很高兴见到你。",
+    "欢迎你，今天也要开心呀。",
+)
 
 
 class IncompatibleSchemaError(RuntimeError):
@@ -137,6 +142,24 @@ class Storage:
                 """,
                 (WELCOME_RULE_ID, json.dumps(WELCOME_PHRASES, ensure_ascii=False), self._now()),
             )
+            row = connection.execute(
+                "SELECT config_json FROM rule_configs WHERE rule_id = ?",
+                (WELCOME_RULE_ID,),
+            ).fetchone()
+            if row is not None and tuple(json.loads(str(row["config_json"]))) == (
+                _LEGACY_WELCOME_PHRASES
+            ):
+                connection.execute(
+                    """
+                    UPDATE rule_configs SET config_json = ?, updated_at = ?
+                    WHERE rule_id = ?
+                    """,
+                    (
+                        json.dumps(WELCOME_PHRASES, ensure_ascii=False),
+                        self._now(),
+                        WELCOME_RULE_ID,
+                    ),
+                )
             self._prune(connection)
 
     def sync_cameras(
