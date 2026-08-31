@@ -270,18 +270,22 @@ class Storage:
             ).fetchall()
         return [self._stored_event(row) for row in rows]
 
-    def latest_rule_trigger(self, rule_id: str) -> StoredEvent | None:
+    def latest_rule_trigger(
+        self, rule_id: str, camera_id: str | None = None
+    ) -> StoredEvent | None:
         with self._connect() as connection:
             row = connection.execute(
                 """
                 SELECT * FROM events
                 WHERE rule_id = ?
+                  AND (? IS NULL OR camera_id = ?)
                   AND kind IN ('speaker_completed', 'speaker_queue_full',
-                               'speaker_reauth_required', 'speaker_skipped_disabled')
+                               'speaker_reauth_required', 'speaker_skipped_disabled',
+                               'speaker_skipped_pairing_changed', 'speaker_unknown')
                 ORDER BY id DESC
                 LIMIT 1
                 """,
-                (rule_id,),
+                (rule_id, camera_id, camera_id),
             ).fetchone()
         return None if row is None else self._stored_event(row)
 
