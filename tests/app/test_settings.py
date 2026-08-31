@@ -36,11 +36,9 @@ def test_settings_parse_speakers_and_discovery_defaults() -> None:
     assert "123456789" not in repr(settings)
 
 
-def test_settings_do_not_fall_back_to_mi_did() -> None:
+def test_settings_require_speaker_catalog() -> None:
     with pytest.raises(ValueError, match="^MI_SPEAKERS_JSON is required$"):
-        Settings.from_mapping(
-            {"MI_USER": "owner", "MI_PASS": "secret", "MI_DID": "123456789"}
-        )
+        Settings.from_mapping({"MI_USER": "owner", "MI_PASS": "secret"})
 
 
 @pytest.mark.parametrize("legacy_key", ["MI_DID", "STREAM_URL"])
