@@ -1,6 +1,48 @@
+import json
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
+
+
+SPEAKER_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+
+
+@dataclass(frozen=True)
+class SpeakerConfig:
+    id: str
+    name: str
+    did: str = field(repr=False)
+
+
+def _speaker_catalog(raw: str) -> tuple[SpeakerConfig, ...]:
+    if not raw.strip():
+        raise ValueError("MI_SPEAKERS_JSON is required")
+    try:
+        payload: Any = json.loads(raw)
+    except json.JSONDecodeError as error:
+        raise ValueError("MI_SPEAKERS_JSON must be valid JSON") from error
+    if not isinstance(payload, list) or not payload:
+        raise ValueError("MI_SPEAKERS_JSON must contain at least one speaker")
+
+    speakers: list[SpeakerConfig] = []
+    for item in payload:
+        if not isinstance(item, dict):
+            raise ValueError("each speaker must be an object")
+        speaker_id = item.get("id")
+        name = item.get("name")
+        did = item.get("did")
+        if not isinstance(speaker_id, str) or not SPEAKER_ID_PATTERN.fullmatch(speaker_id):
+            raise ValueError("speaker id is invalid")
+        if not isinstance(name, str) or not 1 <= len(name.strip()) <= 50:
+            raise ValueError("speaker name is invalid")
+        if not isinstance(did, str) or not did.strip():
+            raise ValueError("speaker did is invalid")
+        speakers.append(SpeakerConfig(speaker_id, name.strip(), did.strip()))
+    if len({speaker.id for speaker in speakers}) != len(speakers):
+        raise ValueError("speaker ids must be unique")
+    return tuple(speakers)
 
 
 def _required(mapping: Mapping[str, str], key: str) -> str:
@@ -31,8 +73,9 @@ def _positive_float(mapping: Mapping[str, str], key: str, default: float) -> flo
 class Settings:
     mi_user: str = field(repr=False)
     mi_pass: str = field(repr=False)
-    mi_did: str = field(repr=False)
-    stream_url: str = "rtsp://127.0.0.1:8554/xiaobai"
+    speakers: tuple[SpeakerConfig, ...] = ()
+    go2rtc_api_url: str = "http://127.0.0.1:1984"
+    go2rtc_rtsp_base_url: str = "rtsp://127.0.0.1:8554"
     data_dir: Path = Path("/var/lib/daihougou/data")
     model: Path = Path("/opt/daihougou/models/person_detection_mediapipe_2023mar.onnx")
     detection_fps: float = 1.0
@@ -62,8 +105,11 @@ class Settings:
         return cls(
             mi_user=_required(mapping, "MI_USER"),
             mi_pass=_required(mapping, "MI_PASS"),
-            mi_did=_required(mapping, "MI_DID"),
-            stream_url=mapping.get("STREAM_URL", "rtsp://127.0.0.1:8554/xiaobai"),
+            speakers=_speaker_catalog(mapping.get("MI_SPEAKERS_JSON", "")),
+            go2rtc_api_url=mapping.get("GO2RTC_API_URL", "http://127.0.0.1:1984"),
+            go2rtc_rtsp_base_url=mapping.get(
+                "GO2RTC_RTSP_BASE_URL", "rtsp://127.0.0.1:8554"
+            ),
             data_dir=Path(mapping.get("DATA_DIR", "/var/lib/daihougou/data")),
             model=Path(
                 mapping.get(
