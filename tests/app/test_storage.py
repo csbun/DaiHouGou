@@ -1,26 +1,87 @@
 import json
+import sqlite3
 from pathlib import Path
 
 import pytest
 
-from daihougou.storage import EventRecord, Storage
+from daihougou.rules import WELCOME_PHRASES, WELCOME_RULE_ID
+from daihougou.storage import EventRecord, IncompatibleSchemaError, SCHEMA_VERSION, Storage
 
 
-def test_storage_starts_welcome_rule_disabled_and_updates_it(tmp_path: Path) -> None:
+def test_new_database_has_v2_schema_and_default_welcome_phrases(tmp_path: Path) -> None:
     storage = Storage(tmp_path / "app.db")
     storage.initialize()
 
-    assert storage.rule_enabled("welcome_on_person_entry") is False
-    storage.set_rule_enabled("welcome_on_person_entry", True)
-    assert storage.rule_enabled("welcome_on_person_entry") is True
+    with sqlite3.connect(tmp_path / "app.db") as connection:
+        version = connection.execute("PRAGMA user_version").fetchone()[0]
+    assert version == SCHEMA_VERSION == 2
+    assert storage.welcome_phrases() == WELCOME_PHRASES
 
 
-def test_storage_rejects_unknown_rule(tmp_path: Path) -> None:
+def test_existing_v1_tables_are_rejected_without_mutation(tmp_path: Path) -> None:
+    path = tmp_path / "app.db"
+    with sqlite3.connect(path) as connection:
+        connection.execute("CREATE TABLE rules(id TEXT PRIMARY KEY, enabled INTEGER)")
+
+    with pytest.raises(IncompatibleSchemaError, match="reset the database"):
+        Storage(path).initialize()
+
+    with sqlite3.connect(path) as connection:
+        assert connection.execute(
+            "SELECT name FROM sqlite_master WHERE name = 'rules'"
+        ).fetchone() is not None
+
+
+def test_sync_creates_disabled_camera_rules_and_preserves_missing_camera(
+    tmp_path: Path,
+) -> None:
+    storage = Storage(tmp_path / "app.db")
+    storage.initialize()
+    storage.sync_cameras(["xiaobai", "xiaobai_25k"], "living_room")
+    storage.set_camera_rule_enabled("xiaobai", WELCOME_RULE_ID, True)
+    storage.set_camera_speaker("xiaobai", "bedroom")
+
+    storage.sync_cameras(["xiaobai_25k"], "living_room")
+
+    assert [camera.stream_id for camera in storage.list_cameras()] == [
+        "xiaobai",
+        "xiaobai_25k",
+    ]
+    assert storage.camera_rule_enabled("xiaobai", WELCOME_RULE_ID) is True
+    assert storage.camera_speaker_id("xiaobai") == "bedroom"
+    assert storage.camera_rule_enabled("xiaobai_25k", WELCOME_RULE_ID) is False
+
+
+def test_welcome_phrases_normalize_and_reject_invalid_update(tmp_path: Path) -> None:
     storage = Storage(tmp_path / "app.db")
     storage.initialize()
 
-    with pytest.raises(KeyError, match="unknown"):
-        storage.set_rule_enabled("unknown", True)
+    assert storage.set_welcome_phrases([" 你好 ", "", "欢迎", "你好"]) == (
+        "你好",
+        "欢迎",
+    )
+    with pytest.raises(ValueError, match="at least one"):
+        storage.set_welcome_phrases(["", "  "])
+    assert storage.welcome_phrases() == ("你好", "欢迎")
+
+
+def test_events_retain_camera_and_safe_speaker_ids(tmp_path: Path) -> None:
+    storage = Storage(tmp_path / "app.db")
+    storage.initialize()
+    storage.record_event(
+        EventRecord(
+            "speaker_completed",
+            True,
+            rule_id=WELCOME_RULE_ID,
+            camera_id="xiaobai",
+            speaker_id="living_room",
+            details={"did": "secret", "confidence": 0.8},
+        )
+    )
+
+    event = storage.recent_events()[0]
+    assert (event.camera_id, event.speaker_id) == ("xiaobai", "living_room")
+    assert json.loads(event.details_json) == {"confidence": 0.8, "did": "[REDACTED]"}
 
 
 def test_storage_redacts_details_and_keeps_newest_events(tmp_path: Path) -> None:
