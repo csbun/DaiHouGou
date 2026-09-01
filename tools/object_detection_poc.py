@@ -21,7 +21,7 @@ FALSE_ANNOUNCEMENT_GATE = 0.05
 OBJECT_P95_GATE_MS = 1000
 PEAK_RSS_GATE_BYTES = 1024**3
 CYCLE_P95_GATE_MS = 1000
-VALIDATION_CORPUS = Path("/tmp/daihougou-object-validation")
+VALIDATION_CORPUS = Path("/tmp/daihougou-object-validation").resolve()
 
 
 @dataclass(frozen=True)

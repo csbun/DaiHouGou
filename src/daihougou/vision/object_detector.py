@@ -224,8 +224,20 @@ class ObjectDetector:
         boxes_by_level: list[npt.NDArray[np.float32]] = []
         scores_by_level: list[npt.NDArray[np.float32]] = []
         class_scores, box_distributions = outputs[::2], outputs[1::2]
+        level_count = len(class_scores)
+        if (
+            len(outputs) % 2 != 0
+            or level_count == 0
+            or len(box_distributions) != level_count
+            or level_count > len(self.strides)
+        ):
+            raise ValueError("NanoDet output levels are invalid")
         for stride, scores, distributions, anchors in zip(
-            self.strides, class_scores, box_distributions, self._anchors, strict=True
+            self.strides[:level_count],
+            class_scores,
+            box_distributions,
+            self._anchors[:level_count],
+            strict=True,
         ):
             scores = np.squeeze(scores, axis=0) if scores.ndim == 3 else scores
             distributions = (

@@ -40,6 +40,18 @@ def nanodet_outputs() -> tuple[np.ndarray, ...]:
     return tuple(outputs)
 
 
+def three_level_nanodet_outputs() -> tuple[np.ndarray, ...]:
+    outputs: list[np.ndarray] = []
+    for stride in (8, 16, 32):
+        positions = (416 // stride) ** 2
+        scores = np.zeros((1, positions, 80), dtype=np.float32)
+        boxes = np.zeros((1, positions, 32), dtype=np.float32)
+        if stride == 8:
+            scores[0, 13 * 52, 15] = 0.9
+        outputs.extend((scores, boxes))
+    return tuple(outputs)
+
+
 def test_detector_decodes_cat_and_reports_original_frame_coordinates() -> None:
     net = FakeNet(nanodet_outputs())
     detector = ObjectDetector(model=None, net=net)
@@ -64,6 +76,14 @@ def test_detector_returns_empty_tuple_when_every_score_is_below_threshold() -> N
     )
 
     assert result.objects == ()
+
+
+def test_detector_accepts_the_three_levels_returned_by_the_pinned_zoo_model() -> None:
+    result = ObjectDetector(model=None, net=FakeNet(three_level_nanodet_outputs())).detect(
+        np.zeros((416, 416, 3), dtype=np.uint8)
+    )
+
+    assert tuple(item.label for item in result.objects) == ("cat",)
 
 
 def test_detector_discards_box_that_maps_only_to_letterbox_padding() -> None:

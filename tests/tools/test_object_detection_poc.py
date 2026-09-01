@@ -236,6 +236,44 @@ def test_main_rejects_corpus_outside_fixed_private_directory(
     assert capsys.readouterr().out == ""
 
 
+def test_main_accepts_a_fixed_validation_directory_that_resolves_through_a_symlink(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from daihougou.vision.object_detector import DetectedObject, ObjectDetection
+
+    corpus = write_corpus(tmp_path, expected_on_all_pages=True)
+    corpus_alias = tmp_path / "validation-alias"
+    corpus_alias.symlink_to(corpus, target_is_directory=True)
+    object_model = tmp_path / "object.onnx"
+    object_model.write_bytes(b"model")
+    frame = np.zeros((100, 100, 3), dtype=np.uint8)
+
+    class FakeObjectDetector:
+        def __init__(self, _: Path) -> None:
+            pass
+
+        def detect(self, _: np.ndarray) -> ObjectDetection:
+            return ObjectDetection(
+                (DetectedObject("cat", 0.9, 0, 0, 10, 10),), latency_ms=7
+            )
+
+    monkeypatch.setattr("tools.object_detection_poc.VALIDATION_CORPUS", corpus.resolve())
+    monkeypatch.setattr("tools.object_detection_poc.cv2.imread", lambda _: frame)
+    monkeypatch.setattr("tools.object_detection_poc.ObjectDetector", FakeObjectDetector)
+    monkeypatch.setattr("tools.object_detection_poc.peak_rss_bytes", lambda: 123)
+
+    assert main(
+        [
+            "--corpus",
+            str(corpus_alias),
+            "--object-model",
+            str(object_model),
+        ]
+    ) == 0
+
+    assert json.loads(capsys.readouterr().out)["passed"] is True
+
+
 def test_main_returns_two_when_a_manifest_image_cannot_be_read(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
