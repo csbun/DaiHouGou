@@ -288,6 +288,9 @@ docker compose -f compose.poc.yaml restart app
 摄像头码流验证、音箱单次试播、稳定性测试、认证故障处理和完整验收步骤见
 [设备兼容性 PoC 与 MVP 运行手册](docs/poc-runbook.md)。
 
+通用物体识别的本地语料准备、NanoDet 校验、物品单模型门禁和可选双摄联调见
+[通用物体识别 PoC 运行手册](docs/object-category-detection-poc-runbook.md)。
+
 ## 许可证
 
 本项目使用 [MIT License](LICENSE)。

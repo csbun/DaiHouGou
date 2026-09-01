@@ -114,6 +114,31 @@ def test_evaluate_computes_gates_with_aggregate_metrics_only() -> None:
     assert '"cat"' not in serialized
 
 
+def test_evaluate_skips_cycle_gate_for_object_only_mode() -> None:
+    results = tuple(
+        PageResult(
+            file=f"private-page-{index}.jpg",
+            primary="cat" if index < 20 else None,
+            expected=("cat",) if index < 20 else (),
+            predicted=("cat",) if index < 20 else (),
+            latency_ms=200,
+        )
+        for index in range(30)
+    )
+
+    report = evaluate(results, peak_rss_bytes=512 * 1024**2, cycle_ms=None)
+
+    assert report == {
+        "false_announcement_ratio": 0.0,
+        "object_p95_ms": 200,
+        "page_count": 30,
+        "passed": True,
+        "peak_rss_bytes": 512 * 1024**2,
+        "primary_accuracy": 1.0,
+        "primary_page_count": 20,
+    }
+
+
 def test_evaluate_returns_failed_gate_for_each_measured_threshold() -> None:
     results = tuple(
         PageResult(
@@ -152,6 +177,32 @@ def test_main_returns_two_for_invalid_inputs_without_a_traceback(
     missing = tmp_path / "missing"
 
     assert main(["--corpus", str(missing), "--object-model", "missing", "--person-model", "missing"]) == 2
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "Traceback" not in captured.err
+
+
+def test_main_rejects_two_cameras_without_a_person_model(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    corpus = write_corpus(tmp_path)
+    monkeypatch.setattr("tools.object_detection_poc.VALIDATION_CORPUS", corpus.resolve())
+    object_model = tmp_path / "object.onnx"
+    object_model.write_bytes(b"model")
+
+    assert main(
+        [
+            "--corpus",
+            str(corpus),
+            "--object-model",
+            str(object_model),
+            "--camera-count",
+            "2",
+        ]
+    ) == 2
 
     captured = capsys.readouterr()
     assert captured.out == ""
@@ -273,6 +324,8 @@ def test_main_warms_models_measures_pages_and_runs_serialized_two_camera_cycles(
             str(object_model),
             "--person-model",
             str(person_model),
+            "--camera-count",
+            "2",
             "--output",
             str(output),
         ]
@@ -294,6 +347,54 @@ def test_main_warms_models_measures_pages_and_runs_serialized_two_camera_cycles(
     assert read_count == 61
     gc.collect()
     assert all(reference() is None for reference in live_frames)
+
+
+def test_main_defaults_to_object_only_without_loading_person_model(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from daihougou.vision.object_detector import DetectedObject, ObjectDetection
+
+    corpus = write_corpus(tmp_path, expected_on_all_pages=True)
+    monkeypatch.setattr("tools.object_detection_poc.VALIDATION_CORPUS", corpus.resolve())
+    object_model = tmp_path / "object.onnx"
+    object_model.write_bytes(b"model")
+    frame = np.zeros((100, 100, 3), dtype=np.uint8)
+    object_calls = 0
+
+    class FakeObjectDetector:
+        def __init__(self, _: Path) -> None:
+            pass
+
+        def detect(self, _: np.ndarray) -> ObjectDetection:
+            nonlocal object_calls
+            object_calls += 1
+            return ObjectDetection(
+                (DetectedObject("cat", 0.9, 0, 0, 10, 10),), latency_ms=7
+            )
+
+    class UnexpectedPersonDetector:
+        def __init__(self, _: Path) -> None:
+            raise AssertionError("object-only mode must not load person model")
+
+    monkeypatch.setattr("tools.object_detection_poc.cv2.imread", lambda _: frame)
+    monkeypatch.setattr("tools.object_detection_poc.ObjectDetector", FakeObjectDetector)
+    monkeypatch.setattr("tools.object_detection_poc.PersonDetector", UnexpectedPersonDetector)
+    monkeypatch.setattr("tools.object_detection_poc.peak_rss_bytes", lambda: 123)
+
+    assert main(
+        [
+            "--corpus",
+            str(corpus),
+            "--object-model",
+            str(object_model),
+        ]
+    ) == 0
+
+    report = json.loads(capsys.readouterr().out)
+    assert report["page_count"] == 30
+    assert report["primary_accuracy"] == 1.0
+    assert "cycle_p95_ms" not in report
+    assert object_calls == 33
 
 
 def test_main_returns_one_for_a_measured_gate_failure(

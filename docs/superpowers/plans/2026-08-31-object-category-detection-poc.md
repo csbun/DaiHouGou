@@ -185,6 +185,14 @@ git commit -m "feat: add NanoDet object detector adapter"
 
 ### Task 2: Local-Only Validation CLI
 
+**Follow-up scope revision (2026-09-01):** The CLI's default gate is now
+object-only. `--person-model` is optional and `--camera-count` defaults to `1`;
+the person model is loaded only for an explicit combined regression. The cycle
+metric and cycle gate are omitted in object-only mode. See
+`docs/object-category-detection-poc-runbook.md` for the executable split
+between local corpus work, target object gates, and optional dual-camera
+integration coverage.
+
 **Files:**
 - Create: `tools/__init__.py`
 - Create: `tools/object_detection_poc.py`
@@ -192,7 +200,7 @@ git commit -m "feat: add NanoDet object detector adapter"
 - Create: `tests/tools/test_object_detection_poc.py`
 
 **Interfaces:**
-- Consumes: `<corpus>/manifest.json`, page images, NanoDet model, existing person model.
+- Consumes: `<corpus>/manifest.json`, page images, and NanoDet model; the existing person model is optional for combined regression.
 - Produces: stdout JSON and optional metrics-only JSON at `--output`; exit 0 for a passed gate, exit 1 for a measured gate failure, exit 2 for invalid input.
 
 - [ ] **Step 1: Write failing manifest and metric tests**
@@ -269,7 +277,7 @@ PEAK_RSS_GATE_BYTES = 1024**3
 CYCLE_P95_GATE_MS = 1000
 ```
 
-Implement `load_manifest(path: Path) -> tuple[ManifestPage, ...]` and `evaluate(results: tuple[PageResult, ...], *, peak_rss_bytes: int, cycle_ms: tuple[int, ...]) -> dict[str, object]`. Reject absolute file names, `..`, missing files, labels outside `COCO_CATEGORIES`, fewer than 30 pages, fewer than 20 primary pages, duplicate manifest file names, and primary labels absent from `expected`. Compute p95 using nearest-rank `ceil(0.95 * count) - 1`. Emit aggregate values only; never include file names, expected labels, predictions, paths, boxes, or images in the report.
+Implement `load_manifest(path: Path) -> tuple[ManifestPage, ...]` and `evaluate(results: tuple[PageResult, ...], *, peak_rss_bytes: int, cycle_ms: tuple[int, ...] | None = None) -> dict[str, object]`. Reject absolute file names, `..`, missing files, labels outside `COCO_CATEGORIES`, fewer than 30 pages, fewer than 20 primary pages, duplicate manifest file names, and primary labels absent from `expected`. Compute p95 using nearest-rank `ceil(0.95 * count) - 1`. Emit aggregate values only; never include file names, expected labels, predictions, paths, boxes, or images in the report. When `cycle_ms` is absent, skip the cycle gate and omit `cycle_p95_ms`.
 
 - [ ] **Step 4: Add the benchmark command**
 
@@ -278,15 +286,15 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--corpus", type=Path, required=True)
     parser.add_argument("--object-model", type=Path, required=True)
-    parser.add_argument("--person-model", type=Path, required=True)
-    parser.add_argument("--camera-count", type=int, default=2, choices=(2,))
+    parser.add_argument("--person-model", type=Path)
+    parser.add_argument("--camera-count", type=int, default=1, choices=(1, 2))
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
-    # Load validated pages, warm each model three times, measure all pages,
-    # then run a two-camera alternating person/object cycle for every page.
+    # Load validated pages and warm the object model three times. If a person
+    # model is supplied, also run the configured serialized integration cycles.
 ```
 
-Use `cv2.imread` and fail closed on unreadable images. Pass every detector result through `select_announced_objects`; do not duplicate filtering in the CLI. Warm up both models three times before measuring. Measure process peak RSS with `resource.getrusage`, normalizing macOS bytes and Linux KiB to bytes. Print `json.dumps(report, sort_keys=True)` and write the same aggregate JSON only when `--output` is present.
+Use `cv2.imread` and fail closed on unreadable images. Pass every detector result through `select_announced_objects`; do not duplicate filtering in the CLI. Always warm the object model three times; warm the person model only when supplied. `--camera-count 2` without a person model is invalid. Measure process peak RSS with `resource.getrusage`, normalizing macOS bytes and Linux KiB to bytes. Print `json.dumps(report, sort_keys=True)` and write the same aggregate JSON only when `--output` is present.
 
 - [ ] **Step 5: Run focused tests and lint**
 
@@ -340,18 +348,19 @@ printf '%s  %s\n' \
 
 Expected: checksum reports `OK`.
 
-- [ ] **Step 3: Run the full PoC gate**
+- [ ] **Step 3: Run the target object gate**
 
 ```bash
 python tools/object_detection_poc.py \
   --corpus /tmp/daihougou-object-validation \
   --object-model /tmp/object_detection_nanodet_2022nov.onnx \
-  --person-model /opt/daihougou/models/person_detection_mediapipe_2023mar.onnx \
-  --camera-count 2 \
   --output /tmp/object-category-announcement-poc.json
 ```
 
 Expected: exit 0 with JSON field `"passed": true`, or exit 1 with `"passed": false`. Both measured outcomes continue only to the report and cleanup steps. An exit 2 means invalid input and must be corrected before the measurement is accepted.
+
+After the object gate passes, the previous MVP can be checked under the optional
+dual-camera load by adding `--person-model /opt/daihougou/models/person_detection_mediapipe_2023mar.onnx --camera-count 2`. This extra run is the only path that emits and gates `cycle_p95_ms`; it is not required to initialize object detection.
 
 - [ ] **Step 4: Write the passing validation report**
 

@@ -99,12 +99,15 @@ def _p95(values: tuple[int, ...]) -> int:
 
 
 def evaluate(
-    results: tuple[PageResult, ...], *, peak_rss_bytes: int, cycle_ms: tuple[int, ...]
+    results: tuple[PageResult, ...],
+    *,
+    peak_rss_bytes: int,
+    cycle_ms: tuple[int, ...] | None = None,
 ) -> dict[str, object]:
-    """Compute only aggregate gate metrics; page-level values stay local."""
+    """Compute aggregate gates; omit cycle metrics when running object-only."""
     if not results:
         raise ValueError("metrics require at least one page")
-    if len(cycle_ms) != len(results):
+    if cycle_ms is not None and len(cycle_ms) != len(results):
         raise ValueError("cycle count must match page count")
     primary_results = tuple(result for result in results if result.primary is not None)
     if not primary_results:
@@ -116,16 +119,15 @@ def evaluate(
         any(label not in result.expected for label in result.predicted) for result in results
     ) / len(results)
     object_p95_ms = _p95(tuple(result.latency_ms for result in results))
-    cycle_p95_ms = _p95(cycle_ms)
     passed = (
         primary_accuracy >= PRIMARY_ACCURACY_GATE
         and false_announcement_ratio < FALSE_ANNOUNCEMENT_GATE
         and object_p95_ms <= OBJECT_P95_GATE_MS
         and peak_rss_bytes <= PEAK_RSS_GATE_BYTES
-        and cycle_p95_ms <= CYCLE_P95_GATE_MS
     )
-    return {
-        "cycle_p95_ms": cycle_p95_ms,
+    if cycle_ms is not None:
+        passed = passed and _p95(cycle_ms) <= CYCLE_P95_GATE_MS
+    report = {
         "false_announcement_ratio": false_announcement_ratio,
         "object_p95_ms": object_p95_ms,
         "page_count": len(results),
@@ -134,6 +136,9 @@ def evaluate(
         "primary_accuracy": primary_accuracy,
         "primary_page_count": len(primary_results),
     }
+    if cycle_ms is not None:
+        report["cycle_p95_ms"] = _p95(cycle_ms)
+    return report
 
 
 def peak_rss_bytes() -> int:
@@ -145,8 +150,8 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace | None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--corpus", type=Path, required=True)
     parser.add_argument("--object-model", type=Path, required=True)
-    parser.add_argument("--person-model", type=Path, required=True)
-    parser.add_argument("--camera-count", type=int, default=2, choices=(2,))
+    parser.add_argument("--person-model", type=Path)
+    parser.add_argument("--camera-count", type=int, default=1, choices=(1, 2))
     parser.add_argument("--output", type=Path)
     try:
         return parser.parse_args(argv)
@@ -169,10 +174,16 @@ def _run_benchmark(args: argparse.Namespace) -> dict[str, object]:
         raise ValueError("corpus must use the fixed private validation directory")
     manifest_path = corpus / "manifest.json"
     pages = load_manifest(manifest_path)
-    if not args.object_model.is_file() or not args.person_model.is_file():
+    if not args.object_model.is_file():
+        raise ValueError("model is missing")
+    if args.camera_count == 2 and args.person_model is None:
+        raise ValueError("camera-count 2 requires a person model")
+    if args.person_model is not None and not args.person_model.is_file():
         raise ValueError("model is missing")
     object_detector = ObjectDetector(args.object_model)
-    person_detector = PersonDetector(args.person_model)
+    person_detector = (
+        PersonDetector(args.person_model) if args.person_model is not None else None
+    )
 
     warmup_frame = _read_frame(corpus, pages[0])
     for _ in range(3):
@@ -180,8 +191,9 @@ def _run_benchmark(args: argparse.Namespace) -> dict[str, object]:
         select_announced_objects(
             detected, frame_width=warmup_frame.shape[1], frame_height=warmup_frame.shape[0]
         )
-    for _ in range(3):
-        person_detector.detect(warmup_frame)
+    if person_detector is not None:
+        for _ in range(3):
+            person_detector.detect(warmup_frame)
     del warmup_frame
 
     results: list[PageResult] = []
@@ -201,16 +213,22 @@ def _run_benchmark(args: argparse.Namespace) -> dict[str, object]:
             )
         )
 
-    cycles: list[int] = []
-    for page in pages:
-        frame = _read_frame(corpus, page)
-        started = time.monotonic()
-        for _ in range(args.camera_count):
-            person_detector.detect(frame)
-            detected = object_detector.detect(frame)
-            select_announced_objects(detected, frame_width=frame.shape[1], frame_height=frame.shape[0])
-        cycles.append(round((time.monotonic() - started) * 1000))
-    return evaluate(tuple(results), peak_rss_bytes=peak_rss_bytes(), cycle_ms=tuple(cycles))
+    cycles: list[int] | None = None
+    if person_detector is not None:
+        cycles = []
+        for page in pages:
+            frame = _read_frame(corpus, page)
+            started = time.monotonic()
+            for _ in range(args.camera_count):
+                person_detector.detect(frame)
+                detected = object_detector.detect(frame)
+                select_announced_objects(
+                    detected, frame_width=frame.shape[1], frame_height=frame.shape[0]
+                )
+            cycles.append(round((time.monotonic() - started) * 1000))
+    return evaluate(
+        tuple(results), peak_rss_bytes=peak_rss_bytes(), cycle_ms=None if cycles is None else tuple(cycles)
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
