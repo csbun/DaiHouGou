@@ -11,6 +11,7 @@ from daihougou.speaker import DirectSpeaker
 from daihougou.speaker_worker import SpeakerManager
 from daihougou.storage import Storage
 from daihougou.vision.frame_source import FfmpegFrameSource
+from daihougou.vision.object_detector import ObjectDetector
 from daihougou.vision.person_detector import PersonDetector
 from daihougou.web import create_app
 
@@ -30,8 +31,16 @@ def create_production_app(settings: Settings | None = None) -> FastAPI:
         storage,
     )
     scheduler = DetectionScheduler(
-        lambda: PersonDetector(resolved.model, resolved.person_threshold)
+        lambda: PersonDetector(resolved.model, resolved.person_threshold),
+        lambda: ObjectDetector(resolved.object_model),
     )
+
+    def frame_source_factory(url: str, size: int):
+        try:
+            return FfmpegFrameSource(url, resolved.detection_fps, size=size)
+        except TypeError:
+            return FfmpegFrameSource(url, resolved.detection_fps)
+
     runtime = Runtime(
         storage=storage,
         discovery=Go2RtcClient(resolved.go2rtc_api_url),
@@ -39,9 +48,7 @@ def create_production_app(settings: Settings | None = None) -> FastAPI:
         speakers=resolved.speakers,
         speaker_manager=speaker_manager,
         scheduler=scheduler,
-        frame_source_factory=lambda url: FfmpegFrameSource(
-            url, resolved.detection_fps
-        ),
+        frame_source_factory=frame_source_factory,
         leave_seconds=resolved.leave_seconds,
         welcome_cooldown_seconds=resolved.welcome_cooldown_seconds,
     )

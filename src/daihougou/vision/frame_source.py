@@ -8,9 +8,11 @@ from typing import BinaryIO, Protocol
 import numpy as np
 import numpy.typing as npt
 
-FRAME_WIDTH = 256
-FRAME_HEIGHT = 256
-FRAME_BYTES = FRAME_WIDTH * FRAME_HEIGHT * 3
+PERSON_FRAME_SIZE = 256
+OBJECT_FRAME_SIZE = 416
+FRAME_WIDTH = PERSON_FRAME_SIZE
+FRAME_HEIGHT = PERSON_FRAME_SIZE
+FRAME_BYTES = PERSON_FRAME_SIZE * PERSON_FRAME_SIZE * 3
 DEFAULT_STALL_TIMEOUT_SECONDS = 30.0
 DEFAULT_WATCHDOG_INTERVAL_SECONDS = 1.0
 
@@ -38,7 +40,9 @@ class FrameSample:
     frame: npt.NDArray[np.uint8]
 
 
-def build_ffmpeg_command(stream_url: str, fps: float) -> list[str]:
+def build_ffmpeg_command(stream_url: str, fps: float, size: int = PERSON_FRAME_SIZE) -> list[str]:
+    if size not in {PERSON_FRAME_SIZE, OBJECT_FRAME_SIZE}:
+        raise ValueError("unsupported frame size")
     return [
         "ffmpeg",
         "-nostdin",
@@ -54,9 +58,9 @@ def build_ffmpeg_command(stream_url: str, fps: float) -> list[str]:
         "-dn",
         "-vf",
         (
-            f"fps={fps},scale={FRAME_WIDTH}:{FRAME_HEIGHT}:"
+            f"fps={fps},scale={size}:{size}:"
             "force_original_aspect_ratio=decrease,"
-            f"pad={FRAME_WIDTH}:{FRAME_HEIGHT}:(ow-iw)/2:(oh-ih)/2:color=0x808080"
+            f"pad={size}:{size}:(ow-iw)/2:(oh-ih)/2:color=0x808080"
         ),
         "-pix_fmt",
         "bgr24",
@@ -103,12 +107,17 @@ class FfmpegFrameSource:
         self,
         stream_url: str,
         fps: float = 1.0,
+        size: int = PERSON_FRAME_SIZE,
         process_factory: ProcessFactory = _spawn,
         sleeper: Callable[[float], None] = time.sleep,
         stall_timeout: float = DEFAULT_STALL_TIMEOUT_SECONDS,
         watchdog_interval: float = DEFAULT_WATCHDOG_INTERVAL_SECONDS,
     ) -> None:
-        self._command = build_ffmpeg_command(stream_url, fps)
+        if size not in {PERSON_FRAME_SIZE, OBJECT_FRAME_SIZE}:
+            raise ValueError("unsupported frame size")
+        self._size = size
+        self._frame_bytes = size * size * 3
+        self._command = build_ffmpeg_command(stream_url, fps, size)
         self._process_factory = process_factory
         self._sleeper = sleeper
         self._stall_timeout = stall_timeout
@@ -185,11 +194,11 @@ class FfmpegFrameSource:
             complete_frames = 0
             if stream is not None:
                 while not self._stop.is_set():
-                    payload = _read_exact(stream, FRAME_BYTES)
-                    if len(payload) != FRAME_BYTES:
+                    payload = _read_exact(stream, self._frame_bytes)
+                    if len(payload) != self._frame_bytes:
                         break
                     frame = np.frombuffer(payload, dtype=np.uint8).reshape(
-                        FRAME_HEIGHT, FRAME_WIDTH, 3
+                        self._size, self._size, 3
                     ).copy()
                     with self._condition:
                         self._sequence += 1

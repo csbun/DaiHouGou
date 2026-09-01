@@ -3,8 +3,9 @@ import threading
 
 import numpy as np
 
-from daihougou.detection_scheduler import DetectionScheduler
+from daihougou.detection_scheduler import DetectionScheduler, DetectorKind
 from daihougou.vision.frame_source import FrameSample
+from daihougou.vision.object_detector import ObjectDetection
 from daihougou.vision.person_detector import PersonDetection
 
 
@@ -140,5 +141,37 @@ def test_duplicate_in_flight_request_for_one_camera_is_rejected() -> None:
         detector.release.set()
         await first
         await scheduler.stop()
+
+    asyncio.run(scenario())
+
+
+def test_detector_kinds_load_independently_and_are_serialized() -> None:
+    class ObjectDetector:
+        def detect(self, frame: np.ndarray) -> ObjectDetection:
+            return ObjectDetection((), 1)
+
+    async def scenario() -> None:
+        person_created = 0
+        object_created = 0
+
+        def person_factory() -> object:
+            nonlocal person_created
+            person_created += 1
+            return type("Person", (), {"detect": lambda self, frame: PersonDetection(False, 0.1, 1)})()
+
+        def object_factory() -> ObjectDetector:
+            nonlocal object_created
+            object_created += 1
+            return ObjectDetector()
+
+        scheduler = DetectionScheduler(person_factory, object_factory)
+        await scheduler.enable(DetectorKind.PERSON)
+        assert person_created == 1
+        assert object_created == 0
+        await scheduler.enable(DetectorKind.OBJECT)
+        assert object_created == 1
+        assert scheduler.snapshot(DetectorKind.PERSON).loaded is True
+        assert scheduler.snapshot(DetectorKind.OBJECT).loaded is True
+        await scheduler.close()
 
     asyncio.run(scenario())

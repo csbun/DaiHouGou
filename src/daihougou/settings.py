@@ -81,6 +81,7 @@ class Settings:
     go2rtc_rtsp_base_url: str = "rtsp://127.0.0.1:8554"
     data_dir: Path = Path("/var/lib/daihougou/data")
     model: Path = Path("/opt/daihougou/models/person_detection_mediapipe_2023mar.onnx")
+    object_model: Path = Path("/opt/daihougou/models/object_detection_nanodet_2022nov.onnx")
     detection_fps: float = 1.0
     person_threshold: float = 0.55
     leave_seconds: float = 10.0
@@ -122,6 +123,12 @@ class Settings:
                 mapping.get(
                     "MODEL",
                     "/opt/daihougou/models/person_detection_mediapipe_2023mar.onnx",
+                )
+            ),
+            object_model=Path(
+                mapping.get(
+                    "OBJECT_MODEL",
+                    "/opt/daihougou/models/object_detection_nanodet_2022nov.onnx",
                 )
             ),
             detection_fps=_positive_float(mapping, "DETECTION_FPS", 1.0),

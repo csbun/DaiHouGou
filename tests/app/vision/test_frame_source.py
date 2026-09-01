@@ -26,6 +26,21 @@ def test_ffmpeg_command_forces_tcp_one_fps_and_fixed_bgr_frames() -> None:
     assert command[-5:] == ["-pix_fmt", "bgr24", "-f", "rawvideo", "pipe:1"]
 
 
+def test_ffmpeg_command_supports_person_and_object_sizes() -> None:
+    person = build_ffmpeg_command("rtsp://127.0.0.1:8554/front", 1.0, 256)
+    object_command = build_ffmpeg_command("rtsp://127.0.0.1:8554/front", 1.0, 416)
+
+    assert "scale=256:256" in person[person.index("-vf") + 1]
+    assert "pad=256:256" in person[person.index("-vf") + 1]
+    assert "scale=416:416" in object_command[object_command.index("-vf") + 1]
+    assert "pad=416:416" in object_command[object_command.index("-vf") + 1]
+
+
+def test_frame_source_rejects_unsupported_size() -> None:
+    with pytest.raises(ValueError, match="unsupported frame size"):
+        FfmpegFrameSource("rtsp://127.0.0.1:8554/front", size=320)
+
+
 def test_reconnect_delay_caps_at_thirty_seconds() -> None:
     assert [reconnect_delay(attempt) for attempt in range(7)] == [1, 2, 4, 8, 16, 30, 30]
 

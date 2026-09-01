@@ -29,6 +29,9 @@ def test_settings_parse_speakers_and_discovery_defaults() -> None:
     assert settings.model == Path(
         "/opt/daihougou/models/person_detection_mediapipe_2023mar.onnx"
     )
+    assert settings.object_model == Path(
+        "/opt/daihougou/models/object_detection_nanodet_2022nov.onnx"
+    )
     assert settings.detection_fps == 1.0
     assert settings.person_threshold == 0.55
     assert settings.web_port == 8080
@@ -85,6 +88,12 @@ def test_settings_accepts_custom_onnx_model_path() -> None:
     settings = Settings.from_mapping({**BASE_ENV, "MODEL": "/models/person.onnx"})
 
     assert settings.model == Path("/models/person.onnx")
+
+
+def test_settings_accepts_custom_object_model_path() -> None:
+    settings = Settings.from_mapping({**BASE_ENV, "OBJECT_MODEL": "/models/object.onnx"})
+
+    assert settings.object_model == Path("/models/object.onnx")
 
 
 @pytest.mark.parametrize(

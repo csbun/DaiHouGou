@@ -1,3 +1,4 @@
+from daihougou.object_catalog import SUPPORTED_CATEGORY_NAMES
 from daihougou.vision.object_detector import DetectedObject, ObjectDetection
 
 
@@ -6,7 +7,9 @@ def select_announced_objects(
 ) -> tuple[DetectedObject, ...]:
     selected_by_label: dict[str, DetectedObject] = {}
     for detected in result.objects:
-        if detected.label == "person":
+        if detected.label == "person" or detected.label == "unknown":
+            continue
+        if detected.label not in SUPPORTED_CATEGORY_NAMES:
             continue
         if detected.label == "book" and detected.area_ratio(frame_width, frame_height) >= 0.50:
             continue

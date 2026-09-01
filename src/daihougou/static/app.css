@@ -346,6 +346,22 @@ textarea[aria-invalid="true"] {
   gap: 8px;
 }
 
+.camera-rules {
+  display: grid;
+  gap: 12px;
+}
+
+.camera-rules .rule-switch {
+  grid-template-columns: minmax(0, 1fr) 48px;
+  align-items: center;
+  column-gap: 10px;
+}
+
+.rule-state {
+  color: #60676d;
+  font-size: 12px;
+}
+
 .switch {
   position: relative;
   display: block;
@@ -450,6 +466,10 @@ table {
   border-collapse: collapse;
 }
 
+.category-table {
+  min-width: 0;
+}
+
 th,
 td {
   padding: 11px 13px;
@@ -543,6 +563,11 @@ tbody tr:last-child td {
     display: flex;
     align-items: center;
     justify-content: space-between;
+  }
+
+  .camera-rules .rule-switch {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 48px;
   }
 
   .latest-result {

@@ -1,6 +1,6 @@
 (() => {
   const statusText = (camera, key) => {
-    if (key === "stream" && !camera.rule_enabled) {
+    if (key === "stream" && camera.rule_enabled === false) {
       return "未启动（规则关闭）";
     }
     return camera[key];
@@ -13,14 +13,34 @@
     );
     if (!row) return;
 
-    for (const key of ["stream", "detector", "presence"]) {
-      row.querySelector(`[data-camera-state="${key}"]`).textContent = statusText(camera, key);
+    const states = {
+      stream: statusText(camera, "stream"),
+      presence: camera.presence,
+      detector: camera.detector || (camera.rules || []).map((rule) => rule.status).join(", "),
+    };
+    for (const [key, value] of Object.entries(states)) {
+      const target = row.querySelector(`[data-camera-state="${key}"]`);
+      if (target) target.textContent = value || "stopped";
     }
-    const checkbox = row.querySelector("[data-rule-checkbox]");
-    checkbox.checked = camera.rule_enabled;
-    checkbox.closest("label").querySelector(".sr-only").textContent =
-      `${camera.rule_enabled ? "关闭" : "开启"} ${camera.stream_id} 欢迎规则`;
-    row.querySelector("[data-rule-enabled]").value = String(!camera.rule_enabled);
+    if (camera.rules) {
+      for (const rule of camera.rules) {
+        const form = row.querySelector(`[data-rule-switch][data-rule-id="${CSS.escape(rule.id)}"]`);
+        if (!form) continue;
+        const checkbox = form.querySelector("[data-rule-checkbox]");
+        checkbox.checked = rule.enabled;
+        form.querySelector("[data-rule-enabled]").value = String(!rule.enabled);
+        const label = checkbox.closest("label").querySelector(".sr-only");
+        if (label) label.textContent = `${rule.enabled ? "关闭" : "开启"} ${camera.stream_id} ${rule.name}`;
+        const state = form.querySelector(".rule-state");
+        if (state) state.textContent = rule.status;
+      }
+    } else {
+      const checkbox = row.querySelector("[data-rule-checkbox]");
+      checkbox.checked = camera.rule_enabled;
+      checkbox.closest("label").querySelector(".sr-only").textContent =
+        `${camera.rule_enabled ? "关闭" : "开启"} ${camera.stream_id} 欢迎规则`;
+      row.querySelector("[data-rule-enabled]").value = String(!camera.rule_enabled);
+    }
 
     document.querySelector("[data-enabled-camera-count]").textContent =
       payload.enabled_camera_count;
@@ -41,6 +61,8 @@
     const feedback = form.querySelector(".rule-feedback");
     const previous = !checkbox.checked;
     enabled.value = String(checkbox.checked);
+    const ruleId = form.querySelector("[name=rule_id]");
+    if (ruleId) ruleId.value = form.dataset.ruleId || checkbox.dataset.ruleId || "";
     checkbox.disabled = true;
     feedback.textContent = "";
 

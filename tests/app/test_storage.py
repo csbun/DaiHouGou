@@ -4,7 +4,13 @@ from pathlib import Path
 
 import pytest
 
-from daihougou.rules import WELCOME_PHRASES, WELCOME_RULE_ID
+from daihougou.rules import (
+    BUILTIN_RULE_IDS,
+    BUILTIN_RULE_NAMES,
+    OBJECT_RULE_ID,
+    WELCOME_PHRASES,
+    WELCOME_RULE_ID,
+)
 from daihougou.storage import SCHEMA_VERSION, EventRecord, IncompatibleSchemaError, Storage
 
 EXPECTED_ENGLISH_WELCOME_PHRASES = (
@@ -146,3 +152,38 @@ def test_storage_enables_wal(tmp_path: Path) -> None:
     storage.initialize()
 
     assert storage.journal_mode() == "wal"
+
+
+def test_initialize_backfills_disabled_object_rule_without_changing_welcome(
+    tmp_path: Path,
+) -> None:
+    storage = Storage(tmp_path / "app.db")
+    storage.initialize()
+    storage.sync_cameras(["front"], "living_room")
+    storage.set_camera_rule_enabled("front", WELCOME_RULE_ID, True)
+    with sqlite3.connect(tmp_path / "app.db") as connection:
+        connection.execute(
+            "DELETE FROM camera_rules WHERE camera_id = ? AND rule_id = ?",
+            ("front", OBJECT_RULE_ID),
+        )
+
+    storage.initialize()
+
+    assert storage.camera_rule_enabled("front", WELCOME_RULE_ID) is True
+    assert storage.camera_rule_enabled("front", OBJECT_RULE_ID) is False
+    assert BUILTIN_RULE_IDS == (WELCOME_RULE_ID, OBJECT_RULE_ID)
+    assert BUILTIN_RULE_NAMES[OBJECT_RULE_ID] == "绘本物体播报"
+
+
+def test_new_camera_gets_every_builtin_rule_disabled(tmp_path: Path) -> None:
+    storage = Storage(tmp_path / "app.db")
+    storage.initialize()
+    storage.sync_cameras(["front"], "living_room")
+
+    assert {
+        rule_id: storage.camera_rule_enabled("front", rule_id)
+        for rule_id in BUILTIN_RULE_IDS
+    } == {
+        WELCOME_RULE_ID: False,
+        OBJECT_RULE_ID: False,
+    }

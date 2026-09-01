@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from daihougou.redaction import redact
-from daihougou.rules import WELCOME_PHRASES, WELCOME_RULE_ID
+from daihougou.rules import BUILTIN_RULE_IDS, WELCOME_PHRASES, WELCOME_RULE_ID
 
 SCHEMA_VERSION = 2
 _SCHEMA_TABLES = frozenset({"camera_rules", "cameras", "events", "rule_configs"})
@@ -160,6 +160,13 @@ class Storage:
                         WELCOME_RULE_ID,
                     ),
                 )
+            connection.executemany(
+                """
+                INSERT OR IGNORE INTO camera_rules(camera_id, rule_id, enabled, updated_at)
+                SELECT stream_id, ?, 0, ? FROM cameras
+                """,
+                [(rule_id, self._now()) for rule_id in BUILTIN_RULE_IDS],
+            )
             self._prune(connection)
 
     def sync_cameras(
@@ -178,12 +185,12 @@ class Storage:
                     (stream_id, default_speaker_id, timestamp, timestamp),
                 ).rowcount
                 if inserted:
-                    connection.execute(
+                    connection.executemany(
                         """
                         INSERT INTO camera_rules(camera_id, rule_id, enabled, updated_at)
                         VALUES (?, ?, 0, ?)
                         """,
-                        (stream_id, WELCOME_RULE_ID, timestamp),
+                        [(stream_id, rule_id, timestamp) for rule_id in BUILTIN_RULE_IDS],
                     )
                 else:
                     connection.execute(

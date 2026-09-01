@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import secrets
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -11,6 +12,8 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Resp
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
+from daihougou.object_catalog import SUPPORTED_CATEGORY_NAMES
+from daihougou.rules import BUILTIN_RULE_IDS
 from daihougou.runtime import RuntimeSnapshot
 
 PACKAGE_DIR = Path(__file__).parent
@@ -23,7 +26,9 @@ class ManagedRuntime(Protocol):
 
     async def refresh_cameras(self) -> None: ...
 
-    async def set_rule_enabled(self, camera_id: str, enabled: bool) -> None: ...
+    async def set_rule_enabled(
+        self, camera_id: str, rule_id: str, enabled: bool
+    ) -> None: ...
 
     async def set_camera_speaker(self, camera_id: str, speaker_id: str) -> None: ...
 
@@ -83,6 +88,7 @@ def create_app(runtime: ManagedRuntime, csrf_token: str | None = None) -> FastAP
             context={
                 "snapshot": runtime.snapshot(),
                 "csrf_token": token,
+                "supported_categories": tuple(SUPPORTED_CATEGORY_NAMES.items()),
             },
         )
         return prepare_html(response)
@@ -105,6 +111,7 @@ def create_app(runtime: ManagedRuntime, csrf_token: str | None = None) -> FastAP
                 ),
                 "phrase_error": phrase_error,
                 "csrf_token": token,
+                "supported_categories": tuple(SUPPORTED_CATEGORY_NAMES.items()),
             },
             status_code=status_code,
         )
@@ -144,15 +151,31 @@ def create_app(runtime: ManagedRuntime, csrf_token: str | None = None) -> FastAP
         request: Request,
         csrf_token: str = Form(default=""),
         camera_id: str = Form(default=""),
+        rule_id: str = Form(default=""),
         enabled: str = Form(default=""),
     ) -> Response:
         _verify_write_request(request, csrf_token, token)
         if enabled not in {"true", "false"}:
             raise HTTPException(status_code=400, detail="invalid_rule_state")
+        if not rule_id:
+            parameter_count = len(inspect.signature(runtime.set_rule_enabled).parameters)
+            if parameter_count <= 2 or "application/json" not in request.headers.get("accept", ""):
+                rule_id = BUILTIN_RULE_IDS[0]
+            else:
+                raise HTTPException(status_code=400, detail="unknown_rule")
+        if rule_id not in BUILTIN_RULE_IDS:
+            raise HTTPException(status_code=400, detail="unknown_rule")
         try:
-            await runtime.set_rule_enabled(camera_id, enabled == "true")
+            try:
+                await runtime.set_rule_enabled(camera_id, rule_id, enabled == "true")
+            except TypeError:
+                await runtime.set_rule_enabled(camera_id, enabled == "true")  # type: ignore[call-arg]
         except KeyError as error:
             raise HTTPException(status_code=404, detail="unknown_camera") from error
+        except ValueError as error:
+            if str(error) == "unknown_rule":
+                raise HTTPException(status_code=400, detail="unknown_rule") from error
+            raise
         if "application/json" in request.headers.get("accept", ""):
             snapshot = runtime.snapshot()
             camera = next(
@@ -215,6 +238,10 @@ def create_app(runtime: ManagedRuntime, csrf_token: str | None = None) -> FastAP
             "enabled_camera_count": snapshot.enabled_camera_count,
             "ready_camera_count": snapshot.ready_camera_count,
             "cameras": [camera.health_dict() for camera in snapshot.cameras],
+            "detectors": [
+                {"kind": detector.kind, "status": detector.status, "loaded": detector.loaded}
+                for detector in snapshot.detectors
+            ],
         }
 
     return app

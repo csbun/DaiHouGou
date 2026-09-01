@@ -1,7 +1,8 @@
 import asyncio
 import threading
+import time
 
-from daihougou.rules import WELCOME_RULE_ID, SpeechAction
+from daihougou.rules import OBJECT_RULE_ID, WELCOME_RULE_ID, SpeechAction
 from daihougou.speaker import SpeakResult
 from daihougou.speaker_worker import SpeakerManager
 from daihougou.storage import EventRecord
@@ -14,7 +15,7 @@ class FakeStorage:
         self.events: list[EventRecord] = []
 
     def camera_rule_enabled(self, camera_id: str, rule_id: str) -> bool:
-        return self.enabled[camera_id] and rule_id == WELCOME_RULE_ID
+        return self.enabled[camera_id] and rule_id in {WELCOME_RULE_ID, OBJECT_RULE_ID}
 
     def camera_speaker_id(self, camera_id: str) -> str:
         return self.pairings[camera_id]
@@ -35,6 +36,24 @@ class FakeSpeaker:
 
 def action(camera: str, speaker: str, text: str) -> SpeechAction:
     return SpeechAction(camera, WELCOME_RULE_ID, speaker, text, 1.0)
+
+
+def object_action(
+    camera: str, speaker: str, text: str, created: float | None = None
+) -> SpeechAction:
+    created = time.monotonic() if created is None else created
+    return SpeechAction(
+        camera,
+        OBJECT_RULE_ID,
+        speaker,
+        text,
+        created,
+        details={"objects": [{"label": text, "confidence": 0.9}]},
+        coalesce_key=(camera, OBJECT_RULE_ID),
+        max_queue_age_seconds=3.0,
+        completion_event_kind="object_announcement_completed",
+        superseded_event_kind="object_announcement_superseded",
+    )
 
 
 def test_manager_routes_each_camera_to_its_fixed_speaker() -> None:
@@ -206,3 +225,75 @@ def test_manager_rejects_unknown_or_full_speaker_queue() -> None:
     assert manager.submit(action("front", "living_room", "一")) is True
     assert manager.submit(action("front", "living_room", "二")) is False
     assert storage.events[-1].kind == "speaker_queue_full"
+
+
+def test_new_object_action_replaces_pending_action_but_not_active_call() -> None:
+    class BlockingSpeaker(FakeSpeaker):
+        def __init__(self) -> None:
+            super().__init__()
+            self.entered = threading.Event()
+            self.release = threading.Event()
+
+        def speak(self, text: str) -> SpeakResult:
+            self.entered.set()
+            assert self.release.wait(2)
+            return super().speak(text)
+
+    async def scenario() -> None:
+        storage = FakeStorage()
+        speaker = BlockingSpeaker()
+        manager = SpeakerManager({"living_room": speaker}, storage)
+        await manager.start()
+        assert manager.submit(object_action("front", "living_room", "cat"))
+        assert await asyncio.to_thread(speaker.entered.wait, 2)
+        assert manager.submit(object_action("front", "living_room", "dog"))
+        speaker.release.set()
+        await manager.join()
+        await manager.stop()
+
+        assert speaker.spoken == ["cat", "dog"]
+        superseded = [event for event in storage.events if event.kind == "object_announcement_superseded"]
+        assert superseded == []
+
+    asyncio.run(scenario())
+
+
+def test_pending_object_action_is_replaced_and_old_action_is_recorded() -> None:
+    async def scenario() -> None:
+        storage = FakeStorage()
+        speaker = FakeSpeaker()
+        manager = SpeakerManager({"living_room": speaker}, storage)
+        assert manager.submit(object_action("front", "living_room", "cat"))
+        assert manager.submit(object_action("front", "living_room", "dog"))
+        await manager.start()
+        await manager.join()
+        await manager.stop()
+
+        assert speaker.spoken == ["dog"]
+        event = storage.events[0]
+        assert event.kind == "object_announcement_superseded"
+        assert event.details == {"objects": [{"confidence": 0.9, "label": "cat"}]}
+
+    asyncio.run(scenario())
+
+
+def test_object_action_expires_at_dequeue_time_but_welcome_does_not() -> None:
+    async def scenario() -> None:
+        storage = FakeStorage()
+        speaker = FakeSpeaker()
+        now = [1.0]
+        manager = SpeakerManager({"living_room": speaker}, storage, clock=lambda: now[0])
+        assert manager.submit(object_action("front", "living_room", "cat", created=1.0))
+        now[0] = 4.01
+        assert manager.submit(action("front", "living_room", "welcome"))
+        await manager.start()
+        await manager.join()
+        await manager.stop()
+
+        assert speaker.spoken == ["welcome"]
+        assert [event.kind for event in storage.events] == [
+            "speaker_skipped_expired",
+            "speaker_completed",
+        ]
+
+    asyncio.run(scenario())

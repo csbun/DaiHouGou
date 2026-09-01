@@ -5,16 +5,25 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Protocol
 
-from daihougou.camera_runtime import CameraRuntime, CameraSnapshot, FrameSource
-from daihougou.detection_scheduler import DetectionScheduler
+from daihougou.camera_runtime import CameraRuntime, FrameSource
+from daihougou.detection_scheduler import DetectionScheduler, DetectorKind, DetectorSnapshot
 from daihougou.go2rtc import DiscoveryError, Go2RtcClient, rtsp_stream_url
+from daihougou.object_rule import ObjectCategoryAnnouncementRule
 from daihougou.presence import PresenceTracker
-from daihougou.rules import WELCOME_RULE_ID, SpeechAction, WelcomeRule
+from daihougou.rules import (
+    BUILTIN_RULE_IDS,
+    BUILTIN_RULE_NAMES,
+    OBJECT_RULE_ID,
+    WELCOME_RULE_ID,
+    SpeechAction,
+    WelcomeRule,
+)
 from daihougou.settings import SpeakerConfig
 from daihougou.speaker_worker import SpeakerManager
 from daihougou.storage import CameraConfig, Storage, StoredEvent
+from daihougou.vision.frame_source import OBJECT_FRAME_SIZE, PERSON_FRAME_SIZE
 
-FrameSourceFactory = Callable[[str], FrameSource]
+FrameSourceFactory = Callable[..., FrameSource]
 
 
 class Discovery(Protocol):
@@ -50,30 +59,98 @@ class SpeakerOption:
 
 
 @dataclass(frozen=True)
-class CameraView:
-    stream_id: str
-    speaker_id: str
-    speaker: str
-    available: bool | None
-    rule_enabled: bool
-    stream: str
-    detector: str
-    presence: str
+class DetectorView:
+    kind: str
+    status: str
+    loaded: bool
+
+
+@dataclass(frozen=True)
+class RuleView:
+    id: str
+    name: str
+    enabled: bool
+    status: str
     last_confidence: float | None
     last_detection_latency_ms: int | None
     last_error: str
     latest_trigger: StoredEvent | None
 
-    def health_dict(self) -> dict[str, str | bool | float | int | None]:
+
+@dataclass(frozen=True)
+class CameraView:
+    stream_id: str
+    speaker_id: str
+    speaker: str
+    available: bool | None
+    rules: tuple[RuleView, ...] = ()
+    stream: str = "stopped"
+    presence: str = "unknown"
+    last_error: str = ""
+    rule_enabled: bool | None = None
+    detector: str = "stopped"
+    last_confidence: float | None = None
+    last_detection_latency_ms: int | None = None
+    latest_trigger: StoredEvent | None = None
+
+    def __post_init__(self) -> None:
+        if self.rule_enabled is None:
+            object.__setattr__(self, "rule_enabled", any(rule.enabled for rule in self.rules))
+        if self.rules:
+            enabled = tuple(rule for rule in self.rules if rule.enabled)
+            if any(rule.status == "degraded" for rule in enabled):
+                object.__setattr__(self, "detector", "degraded")
+            elif enabled and all(rule.status == "ready" for rule in enabled):
+                object.__setattr__(self, "detector", "ready")
+            object.__setattr__(
+                self,
+                "last_confidence",
+                next((rule.last_confidence for rule in self.rules if rule.last_confidence is not None), None),
+            )
+            object.__setattr__(
+                self,
+                "last_detection_latency_ms",
+                next((rule.last_detection_latency_ms for rule in self.rules if rule.last_detection_latency_ms is not None), None),
+            )
+            object.__setattr__(
+                self,
+                "latest_trigger",
+                next((rule.latest_trigger for rule in self.rules if rule.latest_trigger), None),
+            )
+
+    def health_dict(self) -> dict[str, object]:
+        if not self.rules:
+            return {
+                "stream_id": self.stream_id,
+                "available": self.available,
+                "rule_enabled": self.rule_enabled,
+                "stream": self.stream,
+                "detector": self.detector,
+                "presence": self.presence,
+                "last_confidence": self.last_confidence,
+                "last_detection_latency_ms": self.last_detection_latency_ms,
+                "last_error": self.last_error,
+            }
         return {
             "stream_id": self.stream_id,
             "available": self.available,
-            "rule_enabled": self.rule_enabled,
+            "rules": [
+                {
+                    "id": rule.id,
+                    "name": rule.name,
+                    "enabled": rule.enabled,
+                    "status": rule.status,
+                    "last_confidence": rule.last_confidence,
+                    "last_detection_latency_ms": rule.last_detection_latency_ms,
+                    "last_error": rule.last_error,
+                    "latest_trigger": (
+                        rule.latest_trigger.kind if rule.latest_trigger is not None else None
+                    ),
+                }
+                for rule in self.rules
+            ] if self.rules else None,
             "stream": self.stream,
-            "detector": self.detector,
             "presence": self.presence,
-            "last_confidence": self.last_confidence,
-            "last_detection_latency_ms": self.last_detection_latency_ms,
             "last_error": self.last_error,
         }
 
@@ -89,6 +166,7 @@ class RuntimeSnapshot:
     cameras: tuple[CameraView, ...]
     events: tuple[StoredEvent, ...]
     last_error: str
+    detectors: tuple[DetectorView, ...] = ()
 
     @property
     def saved_camera_count(self) -> int:
@@ -107,7 +185,7 @@ class RuntimeSnapshot:
         return sum(
             camera.rule_enabled
             and camera.stream == "ready"
-            and camera.detector == "ready"
+            and all(rule.status == "ready" for rule in camera.rules if rule.enabled)
             for camera in self.cameras
         )
 
@@ -121,8 +199,7 @@ class RuntimeSnapshot:
             return "unhealthy"
         enabled = tuple(camera for camera in self.cameras if camera.rule_enabled)
         if self.discovery == "degraded" or any(
-            camera.stream == "degraded" or camera.detector == "degraded"
-            for camera in enabled
+            camera.stream == "degraded" or camera.detector == "degraded" for camera in enabled
         ):
             return "degraded"
         return "ready"
@@ -155,6 +232,7 @@ class Runtime:
         self._welcome_cooldown_seconds = welcome_cooldown_seconds
         self._available_stream_ids: frozenset[str] | None = None
         self._camera_runtimes: dict[str, CameraRuntime] = {}
+        self._camera_descriptors: dict[str, tuple[frozenset[str], int]] = {}
         self._app_status = "stopped"
         self._database_status = "starting"
         self._discovery_status = "unknown"
@@ -181,7 +259,11 @@ class Runtime:
             for stream_id in sorted(self._camera_runtimes):
                 camera = self._camera_runtimes.pop(stream_id)
                 await camera.stop()
-            if self._scheduler.loaded:
+            self._camera_descriptors.clear()
+            close = getattr(self._scheduler, "close", None)
+            if close is not None:
+                await close()
+            elif self._scheduler.loaded:
                 await self._scheduler.stop()
             await self._speaker_manager.stop()
             self._app_status = "stopped"
@@ -193,7 +275,7 @@ class Runtime:
             except DiscoveryError as error:
                 self._discovery_status = "degraded"
                 self._last_error = str(error)
-            except Exception:  # noqa: BLE001 - adapters may expose varied transport errors.
+            except Exception:  # noqa: BLE001
                 self._discovery_status = "degraded"
                 self._last_error = "go2rtc_unavailable"
             else:
@@ -203,11 +285,15 @@ class Runtime:
                 self._last_error = ""
             await self._reconcile()
 
-    async def set_rule_enabled(self, camera_id: str, enabled: bool) -> None:
+    async def set_rule_enabled(
+        self, camera_id: str, rule_id: str | bool, enabled: bool | None = None
+    ) -> None:
+        if isinstance(rule_id, bool):
+            rule_id, enabled = WELCOME_RULE_ID, rule_id
+        if rule_id not in BUILTIN_RULE_IDS or enabled is None:
+            raise ValueError("unknown_rule")
         async with self._lock:
-            self._storage.set_camera_rule_enabled(
-                camera_id, WELCOME_RULE_ID, enabled
-            )
+            self._storage.set_camera_rule_enabled(camera_id, rule_id, enabled)
             await self._reconcile()
 
     async def set_camera_speaker(self, camera_id: str, speaker_id: str) -> None:
@@ -224,109 +310,189 @@ class Runtime:
 
     def snapshot(self) -> RuntimeSnapshot:
         speaker_names = {speaker.id: speaker.name for speaker in self._speakers}
-        cameras = tuple(
-            self._camera_view(config, speaker_names)
-            for config in self._storage.list_cameras()
-        )
+        cameras = tuple(self._camera_view(config, speaker_names) for config in self._storage.list_cameras())
         shared_failed = self._scheduler.fatal_error or self._speaker_manager.fatal_error
+        detectors = tuple(
+            DetectorView(kind.value, self._detector_snapshot(kind).status, self._detector_snapshot(kind).loaded)
+            for kind in DetectorKind
+        )
         return RuntimeSnapshot(
             app="unhealthy" if shared_failed else self._app_status,
             database=self._database_status,
             discovery=self._discovery_status,
             detector=self._scheduler.status,
             speaker_auth=self._speaker_manager.auth_status,
-            speakers=tuple(
-                SpeakerOption(speaker.id, speaker.name) for speaker in self._speakers
-            ),
+            speakers=tuple(SpeakerOption(speaker.id, speaker.name) for speaker in self._speakers),
             cameras=cameras,
             events=tuple(self._storage.recent_events()),
             last_error="background_task_stopped" if shared_failed else self._last_error,
+            detectors=detectors,
         )
 
     async def _reconcile(self) -> None:
         configs = self._storage.list_cameras()
-        enabled = {
-            config.stream_id
-            for config in configs
-            if self._storage.camera_rule_enabled(config.stream_id, WELCOME_RULE_ID)
-        }
-        desired = (
-            enabled
-            if self._available_stream_ids is None
-            else enabled.intersection(self._available_stream_ids)
-        )
-
-        for stream_id in sorted(self._camera_runtimes.keys() - desired):
-            camera = self._camera_runtimes.pop(stream_id)
-            await camera.stop()
-
-        if not desired:
-            if self._scheduler.loaded:
-                await self._scheduler.stop()
-            return
-
-        if not self._scheduler.loaded:
-            await self._scheduler.start()
-
-        for stream_id in sorted(desired - self._camera_runtimes.keys()):
-            source = self._frame_source_factory(
-                rtsp_stream_url(self._rtsp_base_url, stream_id)
+        enabled_by_camera = {
+            config.stream_id: frozenset(
+                rule_id
+                for rule_id in BUILTIN_RULE_IDS
+                if self._storage.camera_rule_enabled(config.stream_id, rule_id)
             )
+            for config in configs
+        }
+        desired = {
+            stream_id: rule_ids
+            for stream_id, rule_ids in enabled_by_camera.items()
+            if rule_ids
+            and (
+                self._available_stream_ids is None
+                or stream_id in self._available_stream_ids
+            )
+        }
+        if self._available_stream_ids is None:
+            desired = {stream_id: ids for stream_id, ids in enabled_by_camera.items() if ids}
+
+        for stream_id in sorted(self._camera_runtimes.keys() - desired.keys()):
+            await self._camera_runtimes.pop(stream_id).stop()
+            self._camera_descriptors.pop(stream_id, None)
+
+        needed = {
+            kind
+            for rule_ids in desired.values()
+            for kind, rule_id in ((DetectorKind.PERSON, WELCOME_RULE_ID), (DetectorKind.OBJECT, OBJECT_RULE_ID))
+            if rule_id in rule_ids
+        }
+        for kind in DetectorKind:
+            if kind in needed:
+                try:
+                    await self._enable_detector(kind)
+                except RuntimeError:
+                    pass
+            else:
+                await self._disable_detector(kind)
+
+        for stream_id, rule_ids in sorted(desired.items()):
+            size = OBJECT_FRAME_SIZE if OBJECT_RULE_ID in rule_ids else PERSON_FRAME_SIZE
+            descriptor = (rule_ids, size)
+            if self._camera_descriptors.get(stream_id) == descriptor:
+                continue
+            old = self._camera_runtimes.pop(stream_id, None)
+            if old is not None:
+                await old.stop()
+            source = self._make_source(rtsp_stream_url(self._rtsp_base_url, stream_id), size)
             camera = CameraRuntime(
                 stream_id,
                 source,
                 self._scheduler,
                 PresenceTracker(leave_seconds=self._leave_seconds),
-                WelcomeRule(
-                    stream_id,
-                    self._storage,
-                    cooldown_seconds=self._welcome_cooldown_seconds,
-                ),
+                WelcomeRule(stream_id, self._storage, cooldown_seconds=self._welcome_cooldown_seconds)
+                if WELCOME_RULE_ID in rule_ids
+                else None,
                 self._speaker_manager,
                 self._storage,
+                object_rule=ObjectCategoryAnnouncementRule(stream_id, self._storage)
+                if OBJECT_RULE_ID in rule_ids
+                else None,
             )
             self._camera_runtimes[stream_id] = camera
+            self._camera_descriptors[stream_id] = descriptor
             await camera.start()
 
-    def _camera_view(
-        self, config: CameraConfig, speaker_names: dict[str, str]
-    ) -> CameraView:
-        available = (
-            None
-            if self._available_stream_ids is None
-            else config.stream_id in self._available_stream_ids
-        )
-        enabled = self._storage.camera_rule_enabled(
-            config.stream_id, WELCOME_RULE_ID
-        )
+    def _make_source(self, url: str, size: int) -> FrameSource:
+        try:
+            return self._frame_source_factory(url, size)
+        except TypeError:
+            return self._frame_source_factory(url)
+
+    async def _enable_detector(self, kind: DetectorKind) -> None:
+        enable = getattr(self._scheduler, "enable", None)
+        if enable is not None:
+            await enable(kind)
+        elif not self._scheduler.loaded:
+            await self._scheduler.start()
+
+    async def _disable_detector(self, kind: DetectorKind) -> None:
+        disable = getattr(self._scheduler, "disable", None)
+        if disable is not None:
+            await disable(kind)
+        elif (
+            not any(
+                self._storage.camera_rule_enabled(c.stream_id, WELCOME_RULE_ID)
+                for c in self._storage.list_cameras()
+            )
+            and self._scheduler.loaded
+        ):
+            await self._scheduler.stop()
+
+    def _detector_snapshot(self, kind: DetectorKind) -> DetectorSnapshot:
+        snapshot = getattr(self._scheduler, "snapshot", None)
+        if snapshot is not None:
+            result = snapshot(kind)
+            if isinstance(result, DetectorSnapshot):
+                return result
+        return DetectorSnapshot(self._scheduler.status, self._scheduler.loaded, self._scheduler.fatal_error)
+
+    def _camera_view(self, config: CameraConfig, speaker_names: dict[str, str]) -> CameraView:
+        available = None if self._available_stream_ids is None else config.stream_id in self._available_stream_ids
         runtime = self._camera_runtimes.get(config.stream_id)
+        enabled_ids = tuple(
+            rule_id for rule_id in BUILTIN_RULE_IDS if self._storage.camera_rule_enabled(config.stream_id, rule_id)
+        )
         if runtime is not None:
             state = runtime.snapshot()
+            pipeline = {WELCOME_RULE_ID: state.person, OBJECT_RULE_ID: state.object}
+            stream = state.stream
+            presence = state.presence
+            last_error = state.last_error
         else:
-            unavailable = enabled and available is False
-            state = CameraSnapshot(
-                stream_id=config.stream_id,
-                stream="degraded" if unavailable else "stopped",
-                detector="stopped",
-                presence="unknown",
-                last_sequence=0,
-                last_confidence=None,
-                last_detection_latency_ms=None,
-                last_error="stream_unavailable" if unavailable else "",
+            unavailable = bool(enabled_ids) and available is False
+            from daihougou.camera_runtime import PipelineSnapshot
+
+            pipeline = {
+                WELCOME_RULE_ID: PipelineSnapshot("degraded" if unavailable else "stopped", None, None, "stream_unavailable" if unavailable else ""),
+                OBJECT_RULE_ID: PipelineSnapshot("degraded" if unavailable else "stopped", None, None, "stream_unavailable" if unavailable else ""),
+            }
+            stream = "degraded" if unavailable else "stopped"
+            presence = "unknown"
+            last_error = "stream_unavailable" if unavailable else ""
+        rules = tuple(
+            RuleView(
+                rule_id,
+                BUILTIN_RULE_NAMES[rule_id],
+                rule_id in enabled_ids,
+                (
+                    "degraded"
+                    if rule_id in enabled_ids
+                    and self._detector_snapshot(
+                        DetectorKind.PERSON if rule_id == WELCOME_RULE_ID else DetectorKind.OBJECT
+                    ).status
+                    == "degraded"
+                    else pipeline[rule_id].status
+                ),
+                pipeline[rule_id].last_confidence,
+                pipeline[rule_id].last_detection_latency_ms,
+                (
+                    pipeline[rule_id].last_error
+                    or (
+                        "detector_start_failed"
+                        if rule_id in enabled_ids
+                        and self._detector_snapshot(
+                            DetectorKind.PERSON if rule_id == WELCOME_RULE_ID else DetectorKind.OBJECT
+                        ).status
+                        == "degraded"
+                        else ""
+                    )
+                ),
+                self._storage.latest_rule_trigger(rule_id, config.stream_id),
             )
+            for rule_id in BUILTIN_RULE_IDS
+        )
         return CameraView(
-            stream_id=config.stream_id,
-            speaker_id=config.speaker_id,
-            speaker=speaker_names.get(config.speaker_id, config.speaker_id),
-            available=available,
-            rule_enabled=enabled,
-            stream=state.stream,
-            detector=state.detector,
-            presence=state.presence,
-            last_confidence=state.last_confidence,
-            last_detection_latency_ms=state.last_detection_latency_ms,
-            last_error=state.last_error,
-            latest_trigger=self._storage.latest_rule_trigger(
-                WELCOME_RULE_ID, config.stream_id
-            ),
+            config.stream_id,
+            config.speaker_id,
+            speaker_names.get(config.speaker_id, config.speaker_id),
+            available,
+            rules,
+            stream,
+            presence,
+            last_error,
         )

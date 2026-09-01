@@ -1,11 +1,17 @@
 import random
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Protocol
 
 from daihougou.presence import PresenceEvent, PresenceEventKind
 
 WELCOME_RULE_ID = "welcome_on_person_entry"
+OBJECT_RULE_ID = "announce_objects_on_scene_change"
+BUILTIN_RULE_IDS = (WELCOME_RULE_ID, OBJECT_RULE_ID)
+BUILTIN_RULE_NAMES = {
+    WELCOME_RULE_ID: "人员进入欢迎",
+    OBJECT_RULE_ID: "绘本物体播报",
+}
 WELCOME_PHRASES = (
     "Welcome home!",
     "Hi there, welcome back!",
@@ -35,6 +41,11 @@ class SpeechAction:
     speaker_id: str
     text: str
     created_monotonic: float
+    details: dict[str, object] = field(default_factory=dict)
+    coalesce_key: tuple[str, str] | None = None
+    max_queue_age_seconds: float | None = None
+    completion_event_kind: str = "speaker_completed"
+    superseded_event_kind: str | None = None
 
 
 class WelcomeRule:

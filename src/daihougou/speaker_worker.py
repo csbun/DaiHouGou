@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import Mapping
 from typing import Protocol
 
@@ -23,13 +24,18 @@ class SpeakerManager:
         speakers: Mapping[str, Speaker],
         storage: WorkerStorage,
         queue_size: int = 4,
+        clock: callable = time.monotonic,
     ) -> None:
         self._speakers = dict(speakers)
         self._storage = storage
         self._queues = {
-            speaker_id: asyncio.Queue[SpeechAction | None](maxsize=queue_size)
+            speaker_id: asyncio.Queue[SpeechAction | tuple[str, str] | None](maxsize=queue_size)
             for speaker_id in self._speakers
         }
+        self._pending_actions: dict[str, dict[tuple[str, str], SpeechAction]] = {
+            speaker_id: {} for speaker_id in self._speakers
+        }
+        self._clock = clock
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self.auth_status = "unknown"
         self.fatal_error = False
@@ -54,8 +60,23 @@ class SpeakerManager:
         if queue is None:
             self._record(action, "speaker_unknown", False)
             return False
+        key = action.coalesce_key
+        pending = self._pending_actions[action.speaker_id]
+        if key is not None and key in pending:
+            previous = pending[key]
+            pending[key] = action
+            if previous.superseded_event_kind is not None:
+                self._record(
+                    previous,
+                    previous.superseded_event_kind,
+                    False,
+                    details=previous.details,
+                )
+            return True
         try:
-            queue.put_nowait(action)
+            queue.put_nowait(key if key is not None else action)
+            if key is not None:
+                pending[key] = action
             return True
         except asyncio.QueueFull:
             self._record(action, "speaker_queue_full", False)
@@ -81,12 +102,25 @@ class SpeakerManager:
     async def _consume(self, speaker_id: str, speaker: Speaker) -> None:
         queue = self._queues[speaker_id]
         while True:
-            action = await queue.get()
+            entry = await queue.get()
             try:
-                if action is None:
+                if entry is None:
                     return
+                if isinstance(entry, tuple):
+                    action = self._pending_actions[speaker_id].pop(entry, None)
+                    if action is None:
+                        continue
+                else:
+                    action = entry
                 if self.auth_status == "reauth_required":
                     self._record(action, "speaker_reauth_required", False)
+                    continue
+                if (
+                    action.max_queue_age_seconds is not None
+                    and self._clock() - action.created_monotonic
+                    > action.max_queue_age_seconds
+                ):
+                    self._record(action, "speaker_skipped_expired", False)
                     continue
                 if not self._storage.camera_rule_enabled(
                     action.camera_id, action.rule_id
@@ -117,10 +151,10 @@ class SpeakerManager:
                 )
                 self._record(
                     action,
-                    "speaker_completed",
+                    action.completion_event_kind,
                     result.success,
                     latency_ms=result.latency_ms,
-                    details={"code": result.code},
+                    details={**action.details, "code": result.code},
                 )
             finally:
                 queue.task_done()

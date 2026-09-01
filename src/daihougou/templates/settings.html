@@ -36,6 +36,20 @@
             </div>
           </form>
         </div>
+        <div class="settings-section">
+          <h3>支持的物体类别</h3>
+          <p class="section-meta">仅支持列表中的类别。绘本中的其他对象不会被播报。</p>
+          <div class="table-wrap">
+            <table class="category-table">
+              <thead><tr><th>English</th><th>中文</th></tr></thead>
+              <tbody>
+                {% for english, chinese in supported_categories %}
+                <tr><td>{{ english }}</td><td>{{ chinese }}</td></tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        </div>
       </section>
     </main>
   </body>

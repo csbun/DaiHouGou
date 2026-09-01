@@ -16,3 +16,15 @@ def test_mvp_image_pins_and_verifies_person_model() -> None:
     ) in dockerfile
     assert "person-detection-0200" not in dockerfile
     assert 'ENTRYPOINT ["daihougou"]' in dockerfile
+
+
+def test_mvp_image_pins_and_verifies_nanodet_object_model_and_license() -> None:
+    dockerfile = Path("docker/mvp.Dockerfile").read_text(encoding="utf-8")
+
+    assert (
+        "47534e27c9851bb1128ccc0102f1145e27f23f98/"
+        "models/object_detection_nanodet/object_detection_nanodet_2022nov.onnx"
+    ) in dockerfile
+    assert "84ee6a6dd605f7019f25a81615a8fff886b235e8d3924930ca367c6e239a8c6d9c14a7e60b8bae54edca040cbf7b86e7" in dockerfile
+    assert dockerfile.count("sha384sum --check") >= 2
+    assert "COPY third_party/nanodet/LICENSE" in dockerfile
