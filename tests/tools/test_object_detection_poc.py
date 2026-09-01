@@ -155,10 +155,38 @@ def test_main_returns_two_for_invalid_inputs_without_a_traceback(
     assert "Traceback" not in captured.err
 
 
+def test_main_rejects_corpus_outside_fixed_private_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    corpus = write_corpus(tmp_path)
+    object_model = tmp_path / "object.onnx"
+    person_model = tmp_path / "person.onnx"
+    object_model.write_bytes(b"model")
+    person_model.write_bytes(b"model")
+    monkeypatch.setattr(
+        "tools.object_detection_poc.load_manifest",
+        lambda _: (_ for _ in ()).throw(AssertionError("manifest must not be read")),
+    )
+
+    assert main(
+        [
+            "--corpus",
+            str(corpus),
+            "--object-model",
+            str(object_model),
+            "--person-model",
+            str(person_model),
+        ]
+    ) == 2
+
+    assert capsys.readouterr().out == ""
+
+
 def test_main_returns_two_when_a_manifest_image_cannot_be_read(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     corpus = write_corpus(tmp_path)
+    monkeypatch.setattr("tools.object_detection_poc.VALIDATION_CORPUS", corpus.resolve())
     object_model = tmp_path / "object.onnx"
     person_model = tmp_path / "person.onnx"
     object_model.write_bytes(b"model")
@@ -179,6 +207,7 @@ def test_main_warms_models_measures_pages_and_runs_serialized_two_camera_cycles(
     from daihougou.vision.person_detector import PersonDetection
 
     corpus = write_corpus(tmp_path, expected_on_all_pages=True)
+    monkeypatch.setattr("tools.object_detection_poc.VALIDATION_CORPUS", corpus.resolve())
     object_model = tmp_path / "object.onnx"
     person_model = tmp_path / "person.onnx"
     output = tmp_path / "metrics.json"
@@ -254,6 +283,7 @@ def test_main_returns_one_for_a_measured_gate_failure(
     from daihougou.vision.person_detector import PersonDetection
 
     corpus = write_corpus(tmp_path)
+    monkeypatch.setattr("tools.object_detection_poc.VALIDATION_CORPUS", corpus.resolve())
     object_model = tmp_path / "object.onnx"
     person_model = tmp_path / "person.onnx"
     object_model.write_bytes(b"model")

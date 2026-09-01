@@ -21,6 +21,7 @@ FALSE_ANNOUNCEMENT_GATE = 0.05
 OBJECT_P95_GATE_MS = 1000
 PEAK_RSS_GATE_BYTES = 1024**3
 CYCLE_P95_GATE_MS = 1000
+VALIDATION_CORPUS = Path("/tmp/daihougou-object-validation")
 
 
 @dataclass(frozen=True)
@@ -165,11 +166,14 @@ def _read_frames(corpus: Path, pages: tuple[ManifestPage, ...]) -> tuple[np.ndar
 
 
 def _run_benchmark(args: argparse.Namespace) -> dict[str, object]:
-    manifest_path = args.corpus / "manifest.json"
+    corpus = args.corpus.resolve()
+    if corpus != VALIDATION_CORPUS:
+        raise ValueError("corpus must use the fixed private validation directory")
+    manifest_path = corpus / "manifest.json"
     pages = load_manifest(manifest_path)
     if not args.object_model.is_file() or not args.person_model.is_file():
         raise ValueError("model is missing")
-    frames = _read_frames(args.corpus, pages)
+    frames = _read_frames(corpus, pages)
     object_detector = ObjectDetector(args.object_model)
     person_detector = PersonDetector(args.person_model)
 
