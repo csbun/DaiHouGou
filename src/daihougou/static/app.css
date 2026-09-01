@@ -90,11 +90,13 @@ section {
 }
 
 .status {
-  min-width: 86px;
-  min-height: 34px;
-  padding: 7px 10px;
-  border-radius: 6px;
+  min-width: 0;
+  min-height: 28px;
+  padding: 4px 8px;
+  border-radius: 4px;
   text-align: center;
+  font-size: 12px;
+  font-weight: 650;
   white-space: nowrap;
 }
 
@@ -115,27 +117,33 @@ section {
 
 .status-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(6, minmax(0, 1fr));
   margin: 0;
   border: 1px solid #d8dde1;
-  border-radius: 6px;
+  border-radius: 4px;
   background: #fff;
   overflow: hidden;
 }
 
 .status-grid div {
-  min-height: 76px;
-  padding: 15px 16px;
+  min-height: 52px;
+  padding: 9px 11px;
   border-right: 1px solid #e6e9eb;
-  border-bottom: 1px solid #e6e9eb;
+  border-bottom: 0;
 }
 
-.status-grid div:nth-child(3n) {
+.status-grid div:nth-child(6n) {
   border-right: 0;
 }
 
-.status-grid div:nth-last-child(-n + 3) {
-  border-bottom: 0;
+.status-grid dt {
+  font-size: 11px;
+}
+
+.status-grid dd {
+  margin-top: 3px;
+  font-size: 13px;
+  line-height: 1.25;
 }
 
 dt,
@@ -242,6 +250,29 @@ textarea[aria-invalid="true"] {
 
 .button:hover {
   filter: brightness(0.96);
+}
+
+.refresh-form {
+  display: flex;
+}
+
+.icon-button {
+  width: 34px;
+  min-height: 34px;
+  padding: 0;
+  display: inline-grid;
+  place-items: center;
+  color: #60676d;
+  border-color: transparent;
+  background: transparent;
+  font-size: 22px;
+  font-weight: 400;
+  line-height: 1;
+}
+
+.icon-button:hover {
+  filter: none;
+  background: #e9edef;
 }
 
 .section-header {
@@ -443,6 +474,71 @@ textarea[aria-invalid="true"] {
   overflow-wrap: anywhere;
 }
 
+.event-list {
+  display: grid;
+  gap: 8px;
+}
+
+.event-record {
+  padding: 12px 14px;
+  border: 1px solid #d8dde1;
+  border-radius: 6px;
+  background: #fff;
+}
+
+.event-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.event-summary time {
+  color: #60676d;
+  font-size: 12px;
+}
+
+.event-result {
+  font-size: 13px;
+}
+
+.event-result-success {
+  color: #176b47;
+}
+
+.event-result-incomplete {
+  color: #a1261c;
+}
+
+.event-fields {
+  margin: 10px 0 0;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px 14px;
+}
+
+.event-fields div {
+  min-width: 0;
+}
+
+.event-fields dd {
+  margin-top: 3px;
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.event-field-wide {
+  grid-column: 1 / -1;
+}
+
+.event-details {
+  color: #60676d;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px !important;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
 .empty-state {
   min-height: 92px;
   margin: 0;
@@ -524,22 +620,23 @@ tbody tr:last-child td {
   }
 
   .status-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
   .status-grid div:nth-child(3n) {
-    border-right: 1px solid #e6e9eb;
-  }
-
-  .status-grid div:nth-child(2n) {
     border-right: 0;
   }
 
-  .status-grid div:nth-last-child(-n + 3) {
+  .status-grid div:nth-child(3n + 1),
+  .status-grid div:nth-child(3n + 2) {
+    border-right: 1px solid #e6e9eb;
+  }
+
+  .status-grid div:nth-child(-n + 3) {
     border-bottom: 1px solid #e6e9eb;
   }
 
-  .status-grid div:nth-last-child(-n + 2) {
+  .status-grid div:nth-last-child(-n + 3) {
     border-bottom: 0;
   }
 
@@ -548,9 +645,35 @@ tbody tr:last-child td {
   }
 
   .camera-row {
-    grid-template-columns: minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr) minmax(112px, 1fr);
+    grid-template-areas:
+      "identity speaker"
+      "statuses statuses"
+      "rules rules"
+      "latest latest";
     align-items: stretch;
     gap: 15px;
+  }
+
+  .camera-identity {
+    grid-area: identity;
+  }
+
+  .speaker-form {
+    grid-area: speaker;
+  }
+
+  .camera-statuses {
+    grid-area: statuses;
+  }
+
+  .camera-rules,
+  .camera-row > .rule-switch {
+    grid-area: rules;
+  }
+
+  .latest-result {
+    grid-area: latest;
   }
 
   .camera-statuses {
@@ -573,6 +696,10 @@ tbody tr:last-child td {
   .latest-result {
     min-height: 48px;
   }
+
+  .event-fields {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 @media (max-width: 440px) {
@@ -580,23 +707,17 @@ tbody tr:last-child td {
     align-items: flex-start;
   }
 
-  .overall {
-    min-width: 78px;
-  }
-
   .topbar-link {
     min-height: 34px;
     padding: 6px 9px;
   }
 
-  .form-actions,
-  .section-header {
+  .form-actions {
     align-items: stretch;
     flex-direction: column;
   }
 
-  .form-actions .button,
-  .section-header .button {
+  .form-actions .button {
     width: 100%;
   }
 }

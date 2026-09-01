@@ -39,6 +39,36 @@
         </dl>
       </section>
 
+      <section aria-labelledby="events-title">
+        <h2 id="events-title">最近记录</h2>
+        <div class="event-list">
+          {% for event in snapshot.events %}
+          <article class="event-record">
+            <div class="event-summary">
+              <time datetime="{{ event.occurred_at }}">{{ event.occurred_at[:19].replace('T', ' ') }}</time>
+              <strong class="event-result event-result-{% if event.success %}success{% else %}incomplete{% endif %}">
+                {{ '成功' if event.success else '未完成' }}
+              </strong>
+            </div>
+            <dl class="event-fields">
+              <div><dt>摄像头</dt><dd>{{ event.camera_id or '—' }}</dd></div>
+              <div><dt>音箱</dt><dd>{{ event.speaker_id or '—' }}</dd></div>
+              <div><dt>事件</dt><dd>{{ event.kind }}</dd></div>
+              <div><dt>耗时</dt><dd>{{ event.latency_ms ~ ' ms' if event.latency_ms is not none else '—' }}</dd></div>
+              {% if event.spoken_text %}
+              <div class="event-field-wide"><dt>播报内容</dt><dd>{{ event.spoken_text }}</dd></div>
+              {% endif %}
+              {% if event.details_display %}
+              <div class="event-field-wide"><dt>详情</dt><dd class="event-details">{{ event.details_display }}</dd></div>
+              {% endif %}
+            </dl>
+          </article>
+          {% else %}
+          <p class="empty-state">暂无记录</p>
+          {% endfor %}
+        </div>
+      </section>
+
       <section aria-labelledby="cameras-title">
         <div class="section-header">
           <div>
@@ -47,9 +77,11 @@
               {{ snapshot.discovered_camera_count }} 路可用，<span data-ready-camera-count>{{ snapshot.ready_camera_count }}</span> 路就绪
             </p>
           </div>
-          <form method="post" action="/commands/refresh-cameras">
+          <form class="refresh-form" method="post" action="/commands/refresh-cameras">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-            <button class="button secondary" type="submit">刷新摄像头</button>
+            <button class="button icon-button" type="submit" aria-label="刷新摄像头" title="刷新摄像头">
+              <span aria-hidden="true">↻</span>
+            </button>
           </form>
         </div>
 
@@ -149,33 +181,6 @@
           {% else %}
           <p class="empty-state">尚未发现摄像头</p>
           {% endfor %}
-        </div>
-      </section>
-
-      <section aria-labelledby="events-title">
-        <h2 id="events-title">最近记录</h2>
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>时间</th><th>摄像头</th><th>音箱</th><th>事件</th><th>结果</th><th>耗时</th>
-              </tr>
-            </thead>
-            <tbody>
-              {% for event in snapshot.events %}
-              <tr>
-                <td>{{ event.occurred_at[:19].replace('T', ' ') }}</td>
-                <td>{{ event.camera_id or '—' }}</td>
-                <td>{{ event.speaker_id or '—' }}</td>
-                <td>{{ event.kind }}</td>
-                <td>{{ '成功' if event.success else '未完成' }}</td>
-                <td>{{ event.latency_ms ~ ' ms' if event.latency_ms is not none else '—' }}</td>
-              </tr>
-              {% else %}
-              <tr><td colspan="6" class="empty">暂无记录</td></tr>
-              {% endfor %}
-            </tbody>
-          </table>
         </div>
       </section>
     </main>

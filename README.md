@@ -172,7 +172,7 @@ MI_PASS='小米账号密码'
 MI_SPEAKERS_JSON='[{"id":"living_room","name":"客厅音箱","did":"音箱数值DID"},{"id":"bedroom","name":"卧室音箱","did":"另一个音箱数值DID"}]'
 GO2RTC_API_URL=http://127.0.0.1:1984
 GO2RTC_RTSP_BASE_URL=rtsp://127.0.0.1:8554
-WEB_HOST=服务器的局域网IPv4地址
+WEB_HOST=0.0.0.0
 WEB_PORT=8080
 ```
 

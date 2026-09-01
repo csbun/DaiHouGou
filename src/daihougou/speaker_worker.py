@@ -168,6 +168,9 @@ class SpeakerManager:
         latency_ms: int | None = None,
         details: dict[str, object] | None = None,
     ) -> None:
+        event_details = dict(details or {})
+        if kind in {"speaker_completed", "object_announcement_completed"}:
+            event_details["text"] = action.text
         self._storage.record_event(
             EventRecord(
                 kind,
@@ -176,6 +179,6 @@ class SpeakerManager:
                 camera_id=action.camera_id,
                 speaker_id=action.speaker_id,
                 latency_ms=latency_ms,
-                details=details or {},
+                details=event_details,
             )
         )

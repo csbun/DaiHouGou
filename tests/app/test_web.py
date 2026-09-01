@@ -5,7 +5,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from daihougou.runtime import CameraView, RuntimeSnapshot, SpeakerOption
-from daihougou.storage import normalize_welcome_phrases
+from daihougou.storage import StoredEvent, normalize_welcome_phrases
 from daihougou.web import create_app
 
 
@@ -130,6 +130,34 @@ def test_home_lists_cameras_and_links_to_settings_without_phrase_editor() -> Non
     assert "客厅音箱" in response.text
     assert "123456789" not in response.text
     assert response.cookies["daihougou_csrf"] == "fixed-token"
+
+
+def test_home_places_recent_records_before_cameras_and_shows_refresh_icon_and_speech() -> None:
+    runtime = FakeRuntime()
+    runtime._snapshot = replace(
+        runtime._snapshot,
+        events=(
+            StoredEvent(
+                id=1,
+                occurred_at="2026-09-01T12:34:56+00:00",
+                kind="speaker_completed",
+                rule_id="welcome_on_person_entry",
+                camera_id="front",
+                speaker_id="living_room",
+                success=True,
+                latency_ms=12,
+                details_json='{"text": "欢迎回家", "code": 0}',
+            ),
+        ),
+    )
+    with TestClient(create_app(runtime, csrf_token="fixed-token")) as client:
+        response = client.get("/")
+
+    assert response.status_code == 200
+    assert response.text.index('id="events-title"') < response.text.index('id="cameras-title"')
+    assert 'aria-label="刷新摄像头"' in response.text
+    assert ">刷新摄像头<" not in response.text
+    assert "欢迎回家" in response.text
 
 
 def test_settings_page_edits_welcome_phrases_and_links_home() -> None:

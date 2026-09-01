@@ -80,6 +80,22 @@ def test_manager_routes_each_camera_to_its_fixed_speaker() -> None:
     asyncio.run(scenario())
 
 
+def test_manager_records_spoken_text_for_completed_audio() -> None:
+    async def scenario() -> None:
+        storage = FakeStorage()
+        manager = SpeakerManager({"living_room": FakeSpeaker()}, storage)
+        await manager.start()
+        manager.submit(action("front", "living_room", "欢迎回家"))
+        await manager.join()
+        await manager.stop()
+
+        event = storage.events[-1]
+        assert event.kind == "speaker_completed"
+        assert event.details["text"] == "欢迎回家"
+
+    asyncio.run(scenario())
+
+
 def test_manager_drops_action_after_camera_pairing_changes() -> None:
     async def scenario() -> None:
         storage = FakeStorage()

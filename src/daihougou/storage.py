@@ -55,6 +55,25 @@ class StoredEvent:
     latency_ms: int | None
     details_json: str
 
+    @property
+    def details(self) -> dict[str, Any]:
+        try:
+            details = json.loads(self.details_json)
+        except (TypeError, json.JSONDecodeError):
+            return {}
+        return details if isinstance(details, dict) else {}
+
+    @property
+    def spoken_text(self) -> str | None:
+        text = self.details.get("text")
+        return text if isinstance(text, str) and text else None
+
+    @property
+    def details_display(self) -> str:
+        if not self.details:
+            return ""
+        return json.dumps(self.details, ensure_ascii=False, sort_keys=True)
+
 
 def normalize_welcome_phrases(lines: list[str] | tuple[str, ...]) -> tuple[str, ...]:
     phrases = tuple(dict.fromkeys(line.strip() for line in lines if line.strip()))
