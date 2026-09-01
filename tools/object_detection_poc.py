@@ -132,6 +132,7 @@ def evaluate(
         "passed": passed,
         "peak_rss_bytes": peak_rss_bytes,
         "primary_accuracy": primary_accuracy,
+        "primary_page_count": len(primary_results),
     }
 
 
@@ -155,14 +156,11 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace | None:
         raise ValueError("invalid command arguments") from error
 
 
-def _read_frames(corpus: Path, pages: tuple[ManifestPage, ...]) -> tuple[np.ndarray[Any, Any], ...]:
-    frames: list[np.ndarray[Any, Any]] = []
-    for page in pages:
-        frame = cv2.imread(str(corpus / page.file))
-        if frame is None or frame.ndim != 3 or frame.shape[2] != 3:
-            raise ValueError("manifest image is unreadable")
-        frames.append(frame)
-    return tuple(frames)
+def _read_frame(corpus: Path, page: ManifestPage) -> np.ndarray[Any, Any]:
+    frame = cv2.imread(str(corpus / page.file))
+    if frame is None or frame.ndim != 3 or frame.shape[2] != 3:
+        raise ValueError("manifest image is unreadable")
+    return frame
 
 
 def _run_benchmark(args: argparse.Namespace) -> dict[str, object]:
@@ -173,20 +171,22 @@ def _run_benchmark(args: argparse.Namespace) -> dict[str, object]:
     pages = load_manifest(manifest_path)
     if not args.object_model.is_file() or not args.person_model.is_file():
         raise ValueError("model is missing")
-    frames = _read_frames(corpus, pages)
     object_detector = ObjectDetector(args.object_model)
     person_detector = PersonDetector(args.person_model)
 
+    warmup_frame = _read_frame(corpus, pages[0])
     for _ in range(3):
-        detected = object_detector.detect(frames[0])
+        detected = object_detector.detect(warmup_frame)
         select_announced_objects(
-            detected, frame_width=frames[0].shape[1], frame_height=frames[0].shape[0]
+            detected, frame_width=warmup_frame.shape[1], frame_height=warmup_frame.shape[0]
         )
     for _ in range(3):
-        person_detector.detect(frames[0])
+        person_detector.detect(warmup_frame)
+    del warmup_frame
 
     results: list[PageResult] = []
-    for page, frame in zip(pages, frames, strict=True):
+    for page in pages:
+        frame = _read_frame(corpus, page)
         detected = object_detector.detect(frame)
         selected = select_announced_objects(
             detected, frame_width=frame.shape[1], frame_height=frame.shape[0]
@@ -202,7 +202,8 @@ def _run_benchmark(args: argparse.Namespace) -> dict[str, object]:
         )
 
     cycles: list[int] = []
-    for frame in frames:
+    for page in pages:
+        frame = _read_frame(corpus, page)
         started = time.monotonic()
         for _ in range(args.camera_count):
             person_detector.detect(frame)

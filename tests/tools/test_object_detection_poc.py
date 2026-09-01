@@ -1,4 +1,6 @@
+import gc
 import json
+import weakref
 from pathlib import Path
 
 import numpy as np
@@ -105,6 +107,7 @@ def test_evaluate_computes_gates_with_aggregate_metrics_only() -> None:
         "passed": True,
         "peak_rss_bytes": 512 * 1024**2,
         "primary_accuracy": 0.9,
+        "primary_page_count": 20,
     }
     serialized = json.dumps(report)
     assert "private-page" not in serialized
@@ -215,7 +218,19 @@ def test_main_warms_models_measures_pages_and_runs_serialized_two_camera_cycles(
     person_model.write_bytes(b"model")
     trace: list[str] = []
     selection_accesses: list[None] = []
-    frame = np.zeros((100, 100, 3), dtype=np.uint8)
+    live_frames: list[weakref.ReferenceType[np.ndarray]] = []
+    maximum_live_frames = 0
+    read_count = 0
+
+    def read_frame(_: str) -> np.ndarray:
+        nonlocal maximum_live_frames, read_count
+        read_count += 1
+        gc.collect()
+        live_frames[:] = [reference for reference in live_frames if reference() is not None]
+        maximum_live_frames = max(maximum_live_frames, len(live_frames))
+        frame = np.zeros((100, 100, 3), dtype=np.uint8)
+        live_frames.append(weakref.ref(frame))
+        return frame
 
     class TracedObjectDetection:
         latency_ms = 7
@@ -245,7 +260,7 @@ def test_main_warms_models_measures_pages_and_runs_serialized_two_camera_cycles(
             trace.append("person")
             return PersonDetection(False, 0.1, 3)
 
-    monkeypatch.setattr("tools.object_detection_poc.cv2.imread", lambda _: frame)
+    monkeypatch.setattr("tools.object_detection_poc.cv2.imread", read_frame)
     monkeypatch.setattr("tools.object_detection_poc.ObjectDetector", FakeObjectDetector)
     monkeypatch.setattr("tools.object_detection_poc.PersonDetector", FakePersonDetector)
     monkeypatch.setattr("tools.object_detection_poc.peak_rss_bytes", lambda: 123)
@@ -265,6 +280,7 @@ def test_main_warms_models_measures_pages_and_runs_serialized_two_camera_cycles(
 
     report = json.loads(capsys.readouterr().out)
     assert report["page_count"] == 30
+    assert report["primary_page_count"] == 20
     assert report["primary_accuracy"] == 1.0
     assert report["false_announcement_ratio"] == 0.0
     assert report["peak_rss_bytes"] == 123
@@ -274,6 +290,10 @@ def test_main_warms_models_measures_pages_and_runs_serialized_two_camera_cycles(
     assert len(trace) == 156
     assert all(trace[index : index + 4] == ["person", "object", "person", "object"] for index in range(36, 156, 4))
     assert len(selection_accesses) == 93
+    assert maximum_live_frames <= 1
+    assert read_count == 61
+    gc.collect()
+    assert all(reference() is None for reference in live_frames)
 
 
 def test_main_returns_one_for_a_measured_gate_failure(
