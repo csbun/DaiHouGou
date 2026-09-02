@@ -273,7 +273,7 @@ def test_cropped_frames_keep_out_of_region_motion_from_scene_gate() -> None:
             (
                 "color=c=black:s=320x180:r=1:d=5,"
                 "drawbox=x=0:y=0:w=160:h=180:color=white:t=fill:enable='eq(n,1)',"
-                "drawbox=x=160:y=0:w=160:h=180:color=white:t=fill:enable='eq(n,3)'"
+                "drawbox=x=160:y=0:w=160:h=180:color=white:t=fill:enable='gte(n,3)'"
             ),
             "-vf",
             video_filter,
