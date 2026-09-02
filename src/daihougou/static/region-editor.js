@@ -294,7 +294,7 @@
     });
 
     preview.addEventListener("pointermove", (event) => {
-      if (!interaction || !preview.hasPointerCapture(event.pointerId)) return;
+      if (!interaction) return;
       const current = pointFromEvent(event);
       if (interaction.mode === "draw") {
         setRegion(drawRegion(interaction.start, current));

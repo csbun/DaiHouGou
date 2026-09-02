@@ -4,8 +4,8 @@ from collections import deque
 from pathlib import Path
 from urllib.parse import unquote
 
+from daihougou.detection_region import FULL_FRAME_REGION, DetectionRegion
 from daihougou.go2rtc import DiscoveryError
-from daihougou.detection_region import DetectionRegion, FULL_FRAME_REGION
 from daihougou.rules import WELCOME_RULE_ID, SpeechAction
 from daihougou.runtime import Runtime
 from daihougou.settings import SpeakerConfig
@@ -421,7 +421,12 @@ def test_region_update_restarts_only_its_camera_and_keeps_event_history(tmp_path
         assert sources["back"] is old_back
         assert old_back.stop_count == 0
         assert source_calls[-1] == ("front", 256, region)
-        assert runtime.snapshot().cameras[0].detection_region == region
+        front = next(
+            camera
+            for camera in runtime.snapshot().cameras
+            if camera.stream_id == "front"
+        )
+        assert front.detection_region == region
         assert len(runtime.snapshot().events) == event_count
         await runtime.stop()
 

@@ -8,7 +8,7 @@ from typing import BinaryIO, Protocol
 import numpy as np
 import numpy.typing as npt
 
-from daihougou.detection_region import DetectionRegion, FULL_FRAME_REGION
+from daihougou.detection_region import FULL_FRAME_REGION, DetectionRegion
 
 PERSON_FRAME_SIZE = 256
 OBJECT_FRAME_SIZE = 416

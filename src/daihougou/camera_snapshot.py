@@ -1,7 +1,6 @@
 import subprocess
 from collections.abc import Callable
 
-
 SNAPSHOT_TIMEOUT_SECONDS = 10.0
 SNAPSHOT_ERROR = "camera_snapshot_unavailable"
 

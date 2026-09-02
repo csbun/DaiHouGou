@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from daihougou.camera_runtime import CameraRuntime, FrameSource
-from daihougou.detection_region import DetectionRegion, FULL_FRAME_REGION
+from daihougou.detection_region import FULL_FRAME_REGION, DetectionRegion
 from daihougou.detection_scheduler import DetectionScheduler, DetectorKind, DetectorSnapshot
 from daihougou.go2rtc import DiscoveryError, Go2RtcClient, rtsp_stream_url
 from daihougou.object_rule import ObjectCategoryAnnouncementRule
@@ -464,7 +464,7 @@ class Runtime:
                     try:
                         await camera.stop()
                     except Exception:  # noqa: BLE001
-                        pass
+                        camera = None
                 self._camera_runtime_errors[stream_id] = "camera_start_failed"
                 continue
             self._camera_descriptors[stream_id] = descriptor

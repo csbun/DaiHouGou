@@ -7,7 +7,7 @@ import time
 import numpy as np
 import pytest
 
-from daihougou.detection_region import DetectionRegion, FULL_FRAME_REGION
+from daihougou.detection_region import FULL_FRAME_REGION, DetectionRegion
 from daihougou.vision.frame_source import (
     FRAME_BYTES,
     FfmpegFrameSource,

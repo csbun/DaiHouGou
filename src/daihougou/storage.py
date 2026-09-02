@@ -8,8 +8,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from daihougou.redaction import redact
 from daihougou.detection_region import DetectionRegion
+from daihougou.redaction import redact
 from daihougou.rules import BUILTIN_RULE_IDS, WELCOME_PHRASES, WELCOME_RULE_ID
 
 SCHEMA_VERSION = 3

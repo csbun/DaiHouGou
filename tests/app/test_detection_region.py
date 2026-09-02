@@ -2,7 +2,7 @@ import math
 
 import pytest
 
-from daihougou.detection_region import DetectionRegion, FULL_FRAME_REGION
+from daihougou.detection_region import FULL_FRAME_REGION, DetectionRegion
 
 
 def test_detection_region_rounds_to_six_decimals() -> None:

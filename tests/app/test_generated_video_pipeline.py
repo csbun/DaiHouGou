@@ -7,8 +7,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from daihougou.detection_scheduler import DetectionScheduler
 from daihougou.detection_region import DetectionRegion
+from daihougou.detection_scheduler import DetectionScheduler
 from daihougou.runtime import Runtime
 from daihougou.settings import SpeakerConfig
 from daihougou.speaker import SpeakResult

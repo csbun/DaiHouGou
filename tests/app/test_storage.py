@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from daihougou.detection_region import DetectionRegion, FULL_FRAME_REGION
+from daihougou.detection_region import FULL_FRAME_REGION, DetectionRegion
 from daihougou.rules import (
     BUILTIN_RULE_IDS,
     BUILTIN_RULE_NAMES,

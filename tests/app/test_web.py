@@ -6,7 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from daihougou.camera_snapshot import SnapshotUnavailable
-from daihougou.detection_region import DetectionRegion, FULL_FRAME_REGION
+from daihougou.detection_region import FULL_FRAME_REGION, DetectionRegion
 from daihougou.runtime import CameraView, RuntimeSnapshot, SpeakerOption
 from daihougou.storage import StoredEvent, normalize_welcome_phrases
 from daihougou.web import create_app
