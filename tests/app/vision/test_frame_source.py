@@ -7,12 +7,33 @@ import time
 import numpy as np
 import pytest
 
+from daihougou.detection_region import DetectionRegion, FULL_FRAME_REGION
 from daihougou.vision.frame_source import (
     FRAME_BYTES,
     FfmpegFrameSource,
     build_ffmpeg_command,
     reconnect_delay,
 )
+from daihougou.vision.scene_change import SceneChangeGate
+
+
+def test_full_frame_keeps_existing_filter_without_crop() -> None:
+    command = build_ffmpeg_command("rtsp://camera/front", 1.0, 256, FULL_FRAME_REGION)
+    video_filter = command[command.index("-vf") + 1]
+
+    assert video_filter.startswith("fps=1.0,scale=256:256")
+    assert "crop=" not in video_filter
+
+
+def test_region_crop_precedes_fps_scale_and_padding() -> None:
+    region = DetectionRegion(0.25, 0.1, 0.5, 0.8)
+    command = build_ffmpeg_command("rtsp://camera/front", 1.0, 416, region)
+    video_filter = command[command.index("-vf") + 1]
+
+    assert video_filter.startswith(
+        "crop=w=iw*0.500000:h=ih*0.800000:x=iw*0.250000:y=ih*0.100000,"
+        "fps=1.0,scale=416:416"
+    )
 
 
 def test_ffmpeg_command_forces_tcp_one_fps_and_fixed_bgr_frames() -> None:
@@ -185,3 +206,78 @@ def test_production_filter_letterboxes_widescreen_frame_without_distortion() -> 
     assert np.allclose(frame[10, 128], [128, 128, 128], atol=4)
     assert frame[128, 128, 2] > 240
     assert frame[128, 128, :2].max() < 10
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg is required")
+def test_production_filter_crops_right_half_before_scaling() -> None:
+    region = DetectionRegion(0.5, 0.0, 0.5, 1.0)
+    command = build_ffmpeg_command("ignored", 1.0, 256, region)
+    video_filter = command[command.index("-vf") + 1]
+    completed = subprocess.run(
+        [
+            "ffmpeg",
+            "-nostdin",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=red:s=160x180:d=1[left];color=c=blue:s=160x180:d=1[right];[left][right]hstack",
+            "-vf",
+            video_filter,
+            "-frames:v",
+            "1",
+            "-pix_fmt",
+            "bgr24",
+            "-f",
+            "rawvideo",
+            "pipe:1",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    frame = np.frombuffer(completed.stdout, dtype=np.uint8).reshape(256, 256, 3)
+
+    assert np.allclose(frame[128, 128], [255, 0, 0], atol=4)
+    assert np.allclose(frame[10, 128], [255, 0, 0], atol=4)
+    assert np.allclose(frame[128, 0], [128, 128, 128], atol=4)
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg is required")
+def test_cropped_frames_keep_out_of_region_motion_from_scene_gate() -> None:
+    region = DetectionRegion(0.5, 0.0, 0.5, 1.0)
+    command = build_ffmpeg_command("ignored", 1.0, 256, region)
+    video_filter = command[command.index("-vf") + 1]
+    completed = subprocess.run(
+        [
+            "ffmpeg",
+            "-nostdin",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            (
+                "color=c=black:s=320x180:r=1:d=5,"
+                "drawbox=x=0:y=0:w=160:h=180:color=white:t=fill:enable='eq(n,1)',"
+                "drawbox=x=160:y=0:w=160:h=180:color=white:t=fill:enable='eq(n,3)'"
+            ),
+            "-vf",
+            video_filter,
+            "-frames:v",
+            "5",
+            "-pix_fmt",
+            "bgr24",
+            "-f",
+            "rawvideo",
+            "pipe:1",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    frames = np.frombuffer(completed.stdout, dtype=np.uint8).reshape(5, 256, 256, 3)
+    gate = SceneChangeGate()
+
+    assert [gate.changed(frame) for frame in frames] == [True, False, False, True, False]

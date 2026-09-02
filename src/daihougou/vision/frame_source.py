@@ -8,6 +8,8 @@ from typing import BinaryIO, Protocol
 import numpy as np
 import numpy.typing as npt
 
+from daihougou.detection_region import DetectionRegion, FULL_FRAME_REGION
+
 PERSON_FRAME_SIZE = 256
 OBJECT_FRAME_SIZE = 416
 FRAME_WIDTH = PERSON_FRAME_SIZE
@@ -40,9 +42,30 @@ class FrameSample:
     frame: npt.NDArray[np.uint8]
 
 
-def build_ffmpeg_command(stream_url: str, fps: float, size: int = PERSON_FRAME_SIZE) -> list[str]:
+def build_ffmpeg_command(
+    stream_url: str,
+    fps: float,
+    size: int = PERSON_FRAME_SIZE,
+    region: DetectionRegion = FULL_FRAME_REGION,
+) -> list[str]:
     if size not in {PERSON_FRAME_SIZE, OBJECT_FRAME_SIZE}:
         raise ValueError("unsupported frame size")
+    filters: list[str] = []
+    if not region.is_full_frame:
+        filters.append(
+            f"crop=w=iw*{region.width:.6f}:h=ih*{region.height:.6f}:"
+            f"x=iw*{region.x:.6f}:y=ih*{region.y:.6f}"
+        )
+    filters.extend(
+        [
+            f"fps={fps}",
+            (
+                f"scale={size}:{size}:"
+                "force_original_aspect_ratio=decrease"
+            ),
+            f"pad={size}:{size}:(ow-iw)/2:(oh-ih)/2:color=0x808080",
+        ]
+    )
     return [
         "ffmpeg",
         "-nostdin",
@@ -57,11 +80,7 @@ def build_ffmpeg_command(stream_url: str, fps: float, size: int = PERSON_FRAME_S
         "-sn",
         "-dn",
         "-vf",
-        (
-            f"fps={fps},scale={size}:{size}:"
-            "force_original_aspect_ratio=decrease,"
-            f"pad={size}:{size}:(ow-iw)/2:(oh-ih)/2:color=0x808080"
-        ),
+        ",".join(filters),
         "-pix_fmt",
         "bgr24",
         "-f",
@@ -108,6 +127,7 @@ class FfmpegFrameSource:
         stream_url: str,
         fps: float = 1.0,
         size: int = PERSON_FRAME_SIZE,
+        region: DetectionRegion = FULL_FRAME_REGION,
         process_factory: ProcessFactory = _spawn,
         sleeper: Callable[[float], None] = time.sleep,
         stall_timeout: float = DEFAULT_STALL_TIMEOUT_SECONDS,
@@ -117,7 +137,7 @@ class FfmpegFrameSource:
             raise ValueError("unsupported frame size")
         self._size = size
         self._frame_bytes = size * size * 3
-        self._command = build_ffmpeg_command(stream_url, fps, size)
+        self._command = build_ffmpeg_command(stream_url, fps, size, region)
         self._process_factory = process_factory
         self._sleeper = sleeper
         self._stall_timeout = stall_timeout
