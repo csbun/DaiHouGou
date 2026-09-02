@@ -16,7 +16,15 @@
       <a class="topbar-link" href="/">返回摄像头列表</a>
     </header>
 
-    <main class="region-main" data-region-editor data-camera-id="{{ camera.stream_id }}">
+    <main
+      class="region-main"
+      data-region-editor
+      data-camera-id="{{ camera.stream_id }}"
+      data-region-x="{{ camera.detection_region.x }}"
+      data-region-y="{{ camera.detection_region.y }}"
+      data-region-width="{{ camera.detection_region.width }}"
+      data-region-height="{{ camera.detection_region.height }}"
+    >
       <div
         class="region-editor-config"
         data-snapshot-url="/commands/camera-snapshot"
@@ -33,7 +41,12 @@
           </div>
           <button class="button secondary" type="button" data-refresh-preview>刷新画面</button>
         </div>
-        <div class="region-preview" data-region-preview aria-busy="true">
+        <div
+          class="region-preview"
+          data-region-preview
+          aria-label="检测区域画布"
+          aria-busy="true"
+        >
           <img data-region-image alt="{{ camera.stream_id }} 当前画面" hidden>
           <div class="region-selection" data-region-selection hidden>
             {% for handle in ('nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w') %}
@@ -80,6 +93,7 @@
                 max="100"
                 value="{{ region_display[field] }}"
                 data-region-input="{{ field }}"
+                aria-describedby="region-error"
               >
             </label>
             {% endfor %}
@@ -87,6 +101,7 @@
 
           <p
             class="field-error"
+            id="region-error"
             role="alert"
             data-region-error
             {% if not region_error %}hidden{% endif %}

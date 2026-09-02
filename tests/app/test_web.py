@@ -214,6 +214,24 @@ def test_camera_region_page_renders_editor_for_encoded_camera_id() -> None:
     assert "保存" in response.text
 
 
+def test_camera_region_page_exposes_accessible_editor_hooks_without_stream_url() -> None:
+    region = DetectionRegion(0.123456, 0.2, 0.6, 0.5)
+    runtime = FakeRuntime(detection_region=region)
+    with TestClient(create_app(runtime, csrf_token="fixed-token")) as client:
+        response = client.get("/camera-region?camera_id=front")
+
+    assert response.text.count("data-region-handle=") == 8
+    for direction in ("n", "ne", "e", "se", "s", "sw", "w", "nw"):
+        assert f'data-region-handle="{direction}"' in response.text
+    assert 'aria-label="检测区域画布"' in response.text
+    assert response.text.count('inputmode="decimal"') == 4
+    assert response.text.count('aria-describedby="region-error"') == 4
+    assert 'data-region-x="0.123456"' in response.text
+    assert 'data-region-width="0.6"' in response.text
+    assert "beforeunload" not in response.text
+    assert "rtsp://" not in response.text
+
+
 def test_camera_region_page_rejects_unknown_camera() -> None:
     runtime = FakeRuntime()
     with TestClient(create_app(runtime, csrf_token="fixed-token")) as client:
