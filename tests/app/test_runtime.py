@@ -456,7 +456,7 @@ def test_disabled_camera_region_update_creates_no_source(tmp_path: Path) -> None
     asyncio.run(scenario())
 
 
-def test_region_update_persists_and_degrades_only_camera_when_source_start_fails(
+def test_region_update_handles_internal_factory_type_error_once(
     tmp_path: Path,
 ) -> None:
     async def scenario() -> None:
@@ -468,9 +468,12 @@ def test_region_update_persists_and_degrades_only_camera_when_source_start_fails
         await runtime.set_rule_enabled("back", True)
         old_back = sources["back"]
 
+        factory_calls: list[tuple[str, int, DetectionRegion]] = []
+
         def failing_factory(url: str, size: int, region: DetectionRegion) -> FakeSource:
+            factory_calls.append((url, size, region))
             if url.endswith("/front"):
-                raise RuntimeError("source unavailable")
+                raise TypeError("source configuration is invalid")
             return FakeSource()
 
         runtime._frame_source_factory = failing_factory
@@ -481,6 +484,7 @@ def test_region_update_persists_and_degrades_only_camera_when_source_start_fails
         assert cameras["front"].detection_region == region
         assert cameras["front"].stream == "degraded"
         assert cameras["front"].last_error == "camera_start_failed"
+        assert factory_calls == [("rtsp://127.0.0.1:8554/front", 256, region)]
         assert all(
             rule.last_error == "camera_start_failed"
             for rule in cameras["front"].rules

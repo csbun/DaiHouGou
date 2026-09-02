@@ -457,13 +457,7 @@ class Runtime:
     def _make_source(
         self, url: str, size: int, region: DetectionRegion
     ) -> FrameSource:
-        try:
-            return self._frame_source_factory(url, size, region)
-        except TypeError:
-            try:
-                return self._frame_source_factory(url, size)
-            except TypeError:
-                return self._frame_source_factory(url)
+        return self._frame_source_factory(url, size, region)
 
     async def _enable_detector(self, kind: DetectorKind) -> None:
         enable = getattr(self._scheduler, "enable", None)
