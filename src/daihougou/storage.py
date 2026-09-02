@@ -9,10 +9,14 @@ from pathlib import Path
 from typing import Any
 
 from daihougou.redaction import redact
+from daihougou.detection_region import DetectionRegion
 from daihougou.rules import BUILTIN_RULE_IDS, WELCOME_PHRASES, WELCOME_RULE_ID
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 _SCHEMA_TABLES = frozenset({"camera_rules", "cameras", "events", "rule_configs"})
+_CAMERA_COLUMNS = frozenset(
+    {"stream_id", "speaker_id", "first_seen_at", "last_seen_at", "region_x", "region_y", "region_width", "region_height"}
+)
 _LEGACY_WELCOME_PHRASES = (
     "你好呀，欢迎回来。",
     "嗨，很高兴见到你。",
@@ -30,6 +34,7 @@ class CameraConfig:
     speaker_id: str
     first_seen_at: str
     last_seen_at: str
+    detection_region: DetectionRegion
 
 
 @dataclass(frozen=True)
@@ -120,7 +125,11 @@ class Storage:
                         stream_id TEXT PRIMARY KEY,
                         speaker_id TEXT NOT NULL,
                         first_seen_at TEXT NOT NULL,
-                        last_seen_at TEXT NOT NULL
+                        last_seen_at TEXT NOT NULL,
+                        region_x REAL NOT NULL DEFAULT 0,
+                        region_y REAL NOT NULL DEFAULT 0,
+                        region_width REAL NOT NULL DEFAULT 1,
+                        region_height REAL NOT NULL DEFAULT 1
                     );
                     CREATE TABLE camera_rules (
                         camera_id TEXT NOT NULL REFERENCES cameras(stream_id),
@@ -145,13 +154,44 @@ class Storage:
                         latency_ms INTEGER,
                         details_json TEXT NOT NULL
                     );
-                    PRAGMA user_version = 2;
+                    PRAGMA user_version = 3;
                     """
                 )
+            elif schema_version == 2 and table_names == _SCHEMA_TABLES:
+                columns = {
+                    str(row["name"])
+                    for row in connection.execute("PRAGMA table_info(cameras)")
+                }
+                if columns != {"stream_id", "speaker_id", "first_seen_at", "last_seen_at"}:
+                    raise IncompatibleSchemaError(
+                        "incompatible database; reset the database using the runbook"
+                    )
+                connection.execute(
+                    "ALTER TABLE cameras ADD COLUMN region_x REAL NOT NULL DEFAULT 0"
+                )
+                connection.execute(
+                    "ALTER TABLE cameras ADD COLUMN region_y REAL NOT NULL DEFAULT 0"
+                )
+                connection.execute(
+                    "ALTER TABLE cameras ADD COLUMN region_width REAL NOT NULL DEFAULT 1"
+                )
+                connection.execute(
+                    "ALTER TABLE cameras ADD COLUMN region_height REAL NOT NULL DEFAULT 1"
+                )
+                connection.execute("PRAGMA user_version = 3")
             elif schema_version != SCHEMA_VERSION or table_names != _SCHEMA_TABLES:
                 raise IncompatibleSchemaError(
                     "incompatible database; reset the database using the runbook"
                 )
+            else:
+                columns = {
+                    str(row["name"])
+                    for row in connection.execute("PRAGMA table_info(cameras)")
+                }
+                if columns != _CAMERA_COLUMNS:
+                    raise IncompatibleSchemaError(
+                        "incompatible database; reset the database using the runbook"
+                    )
 
             connection.execute("PRAGMA journal_mode = WAL")
             connection.execute(
@@ -264,6 +304,21 @@ class Storage:
             if cursor.rowcount != 1:
                 raise KeyError(camera_id)
 
+    def set_camera_detection_region(
+        self, camera_id: str, region: DetectionRegion
+    ) -> None:
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE cameras
+                SET region_x = ?, region_y = ?, region_width = ?, region_height = ?
+                WHERE stream_id = ?
+                """,
+                (region.x, region.y, region.width, region.height, camera_id),
+            )
+            if cursor.rowcount != 1:
+                raise KeyError(camera_id)
+
     def welcome_phrases(self) -> tuple[str, ...]:
         with self._connect() as connection:
             row = connection.execute(
@@ -364,7 +419,8 @@ class Storage:
     def _list_cameras(connection: sqlite3.Connection) -> list[CameraConfig]:
         rows = connection.execute(
             """
-            SELECT stream_id, speaker_id, first_seen_at, last_seen_at
+            SELECT stream_id, speaker_id, first_seen_at, last_seen_at,
+                   region_x, region_y, region_width, region_height
             FROM cameras ORDER BY stream_id
             """
         ).fetchall()
@@ -374,6 +430,9 @@ class Storage:
                 speaker_id=row["speaker_id"],
                 first_seen_at=row["first_seen_at"],
                 last_seen_at=row["last_seen_at"],
+                detection_region=DetectionRegion(
+                    row["region_x"], row["region_y"], row["region_width"], row["region_height"]
+                ),
             )
             for row in rows
         ]

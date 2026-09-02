@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from daihougou.detection_region import DetectionRegion, FULL_FRAME_REGION
 from daihougou.rules import (
     BUILTIN_RULE_IDS,
     BUILTIN_RULE_NAMES,
@@ -32,13 +33,81 @@ LEGACY_WELCOME_PHRASES = (
 )
 
 
-def test_new_database_has_v2_schema_and_default_welcome_phrases(tmp_path: Path) -> None:
+def create_v2_database(path: Path) -> None:
+    with sqlite3.connect(path) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE cameras (
+                stream_id TEXT PRIMARY KEY,
+                speaker_id TEXT NOT NULL,
+                first_seen_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL
+            );
+            CREATE TABLE camera_rules (
+                camera_id TEXT NOT NULL REFERENCES cameras(stream_id),
+                rule_id TEXT NOT NULL,
+                enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (camera_id, rule_id)
+            );
+            CREATE TABLE rule_configs (
+                rule_id TEXT PRIMARY KEY,
+                config_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                occurred_at TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                rule_id TEXT,
+                camera_id TEXT,
+                speaker_id TEXT,
+                success INTEGER NOT NULL CHECK (success IN (0, 1)),
+                latency_ms INTEGER,
+                details_json TEXT NOT NULL
+            );
+            PRAGMA user_version = 2;
+            """
+        )
+        connection.execute(
+            "INSERT INTO cameras VALUES (?, ?, ?, ?)",
+            ("front", "bedroom", "2026-01-01T00:00:00+00:00", "2026-01-01T00:00:00+00:00"),
+        )
+        connection.execute(
+            "INSERT INTO camera_rules VALUES (?, ?, ?, ?)",
+            ("front", WELCOME_RULE_ID, 1, "2026-01-01T00:00:00+00:00"),
+        )
+        connection.execute(
+            "INSERT INTO rule_configs VALUES (?, ?, ?)",
+            (WELCOME_RULE_ID, json.dumps(("Custom welcome",)), "2026-01-01T00:00:00+00:00"),
+        )
+        connection.execute(
+            """
+            INSERT INTO events(
+                occurred_at, kind, rule_id, camera_id, speaker_id, success,
+                latency_ms, details_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "2026-01-01T00:00:00+00:00",
+                "existing_event",
+                WELCOME_RULE_ID,
+                "front",
+                "bedroom",
+                1,
+                10,
+                "{}",
+            ),
+        )
+
+
+def test_new_database_has_v3_schema_and_default_welcome_phrases(tmp_path: Path) -> None:
     storage = Storage(tmp_path / "app.db")
     storage.initialize()
 
     with sqlite3.connect(tmp_path / "app.db") as connection:
         version = connection.execute("PRAGMA user_version").fetchone()[0]
-    assert version == SCHEMA_VERSION == 2
+    assert version == SCHEMA_VERSION == 3
     assert storage.welcome_phrases() == EXPECTED_ENGLISH_WELCOME_PHRASES
     assert WELCOME_PHRASES == EXPECTED_ENGLISH_WELCOME_PHRASES
 
@@ -91,6 +160,75 @@ def test_sync_creates_disabled_camera_rules_and_preserves_missing_camera(
     assert storage.camera_rule_enabled("xiaobai", WELCOME_RULE_ID) is True
     assert storage.camera_speaker_id("xiaobai") == "bedroom"
     assert storage.camera_rule_enabled("xiaobai_25k", WELCOME_RULE_ID) is False
+
+
+def test_new_camera_uses_full_frame_detection_region(tmp_path: Path) -> None:
+    storage = Storage(tmp_path / "app.db")
+    storage.initialize()
+    storage.sync_cameras(["front"], "living_room")
+
+    assert storage.list_cameras()[0].detection_region == FULL_FRAME_REGION
+
+
+def test_camera_detection_region_round_trips_and_later_save_overwrites(
+    tmp_path: Path,
+) -> None:
+    storage = Storage(tmp_path / "app.db")
+    storage.initialize()
+    storage.sync_cameras(["front"], "living_room")
+
+    storage.set_camera_detection_region("front", DetectionRegion(0.1, 0.2, 0.7, 0.6))
+    storage.set_camera_detection_region("front", DetectionRegion(0.2, 0.3, 0.5, 0.4))
+
+    assert storage.list_cameras()[0].detection_region == DetectionRegion(0.2, 0.3, 0.5, 0.4)
+
+
+def test_set_camera_detection_region_rejects_unknown_camera(tmp_path: Path) -> None:
+    storage = Storage(tmp_path / "app.db")
+    storage.initialize()
+
+    with pytest.raises(KeyError, match="missing"):
+        storage.set_camera_detection_region("missing", FULL_FRAME_REGION)
+
+
+def test_initialize_migrates_v2_database_without_losing_data(tmp_path: Path) -> None:
+    path = tmp_path / "app.db"
+    create_v2_database(path)
+
+    storage = Storage(path)
+    storage.initialize()
+
+    camera = storage.list_cameras()[0]
+    assert SCHEMA_VERSION == 3
+    assert camera.detection_region == FULL_FRAME_REGION
+    assert camera.speaker_id == "bedroom"
+    assert storage.camera_rule_enabled("front", WELCOME_RULE_ID) is True
+    assert storage.welcome_phrases() == ("Custom welcome",)
+    assert storage.recent_events()[0].kind == "existing_event"
+
+
+def test_initialize_rejects_malformed_v2_tables_without_adding_region_columns(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "app.db"
+    with sqlite3.connect(path) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE cameras (stream_id TEXT PRIMARY KEY);
+            CREATE TABLE unexpected (id INTEGER PRIMARY KEY);
+            PRAGMA user_version = 2;
+            """
+        )
+
+    with pytest.raises(IncompatibleSchemaError, match="reset the database"):
+        Storage(path).initialize()
+
+    with sqlite3.connect(path) as connection:
+        columns = {
+            row[1]
+            for row in connection.execute("PRAGMA table_info(cameras)").fetchall()
+        }
+    assert "region_x" not in columns
 
 
 def test_welcome_phrases_normalize_and_reject_invalid_update(tmp_path: Path) -> None:
