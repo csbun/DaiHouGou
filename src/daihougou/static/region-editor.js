@@ -120,6 +120,12 @@
     );
   }
 
+  function saveStatusMessage(camera) {
+    return camera.stream === "starting" || camera.stream === "degraded" || camera.last_error
+      ? "区域已保存，摄像头尚未恢复"
+      : "区域已保存";
+  }
+
   function initializeEditor(editor) {
     const config = editor.querySelector(".region-editor-config");
     const preview = editor.querySelector("[data-region-preview]");
@@ -354,10 +360,7 @@
           throw new Error(payload.detail || "save failed");
         }
         setRegion(payload.region);
-        saveStatus.textContent =
-          payload.camera.stream === "degraded" || payload.camera.last_error
-            ? "区域已保存，摄像头尚未恢复"
-            : "区域已保存";
+        saveStatus.textContent = saveStatusMessage(payload.camera);
       } catch (error) {
         saveStatus.textContent = "";
         showError(
@@ -385,6 +388,7 @@
   return {
     FULL_FRAME_REGION,
     parsePercentage,
+    saveStatusMessage,
     normalizeRegion,
     validateRegion,
     drawRegion,

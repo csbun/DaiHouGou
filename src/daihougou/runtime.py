@@ -246,6 +246,7 @@ class Runtime:
             str, tuple[frozenset[str], int, DetectionRegion]
         ] = {}
         self._camera_runtime_errors: dict[str, str] = {}
+        self._pending_object_baselines: set[str] = set()
         self._app_status = "stopped"
         self._database_status = "starting"
         self._discovery_status = "unknown"
@@ -274,6 +275,7 @@ class Runtime:
                 await camera.stop()
             self._camera_descriptors.clear()
             self._camera_runtime_errors.clear()
+            self._pending_object_baselines.clear()
             close = getattr(self._scheduler, "close", None)
             if close is not None:
                 await close()
@@ -333,9 +335,8 @@ class Runtime:
             if current.detection_region == region:
                 return
             self._storage.set_camera_detection_region(camera_id, region)
-            await self._reconcile(
-                suppress_initial_object_for=frozenset({camera_id})
-            )
+            self._pending_object_baselines.add(camera_id)
+            await self._reconcile()
 
     async def capture_camera_snapshot(self, camera_id: str) -> bytes:
         if not any(
@@ -373,9 +374,7 @@ class Runtime:
             detectors=detectors,
         )
 
-    async def _reconcile(
-        self, suppress_initial_object_for: frozenset[str] = frozenset()
-    ) -> None:
+    async def _reconcile(self) -> None:
         configs = self._storage.list_cameras()
         enabled_by_camera = {
             config.stream_id: frozenset(
@@ -396,6 +395,9 @@ class Runtime:
         }
         if self._available_stream_ids is None:
             desired = {stream_id: ids for stream_id, ids in enabled_by_camera.items() if ids}
+        self._pending_object_baselines.intersection_update(
+            stream_id for stream_id, rule_ids in enabled_by_camera.items() if rule_ids
+        )
 
         for stream_id in sorted(self._camera_runtimes.keys() - desired.keys()):
             await self._camera_runtimes.pop(stream_id).stop()
@@ -425,9 +427,14 @@ class Runtime:
             descriptor = (rule_ids, size, config.detection_region)
             if self._camera_descriptors.get(stream_id) == descriptor:
                 continue
-            old = self._camera_runtimes.pop(stream_id, None)
+            old = self._camera_runtimes.get(stream_id)
             if old is not None:
-                await old.stop()
+                try:
+                    await old.stop()
+                except Exception:  # noqa: BLE001
+                    self._camera_runtime_errors[stream_id] = "camera_start_failed"
+                    continue
+                self._camera_runtimes.pop(stream_id, None)
             camera: CameraRuntime | None = None
             try:
                 source = self._make_source(
@@ -453,7 +460,7 @@ class Runtime:
                     if OBJECT_RULE_ID in rule_ids
                     else None,
                     suppress_initial_object_detection=(
-                        stream_id in suppress_initial_object_for
+                        stream_id in self._pending_object_baselines
                     ),
                 )
                 self._camera_runtimes[stream_id] = camera
@@ -468,6 +475,7 @@ class Runtime:
                 continue
             self._camera_descriptors[stream_id] = descriptor
             self._camera_runtime_errors.pop(stream_id, None)
+            self._pending_object_baselines.discard(stream_id)
 
     def _make_source(
         self, url: str, size: int, region: DetectionRegion
@@ -505,18 +513,18 @@ class Runtime:
     def _camera_view(self, config: CameraConfig, speaker_names: dict[str, str]) -> CameraView:
         available = None if self._available_stream_ids is None else config.stream_id in self._available_stream_ids
         runtime = self._camera_runtimes.get(config.stream_id)
+        runtime_error = self._camera_runtime_errors.get(config.stream_id, "")
         enabled_ids = tuple(
             rule_id for rule_id in BUILTIN_RULE_IDS if self._storage.camera_rule_enabled(config.stream_id, rule_id)
         )
         if runtime is not None:
             state = runtime.snapshot()
             pipeline = {WELCOME_RULE_ID: state.person, OBJECT_RULE_ID: state.object}
-            stream = state.stream
+            stream = "degraded" if runtime_error else state.stream
             presence = state.presence
-            last_error = state.last_error
+            last_error = runtime_error or state.last_error
         else:
             unavailable = bool(enabled_ids) and available is False
-            runtime_error = self._camera_runtime_errors.get(config.stream_id, "")
             from daihougou.camera_runtime import PipelineSnapshot
 
             pipeline = {
@@ -544,16 +552,22 @@ class Runtime:
                 (
                     "degraded"
                     if rule_id in enabled_ids
-                    and self._detector_snapshot(
-                        DetectorKind.PERSON if rule_id == WELCOME_RULE_ID else DetectorKind.OBJECT
-                    ).status
-                    == "degraded"
+                    and (
+                        runtime_error
+                        or self._detector_snapshot(
+                            DetectorKind.PERSON
+                            if rule_id == WELCOME_RULE_ID
+                            else DetectorKind.OBJECT
+                        ).status
+                        == "degraded"
+                    )
                     else pipeline[rule_id].status
                 ),
                 pipeline[rule_id].last_confidence,
                 pipeline[rule_id].last_detection_latency_ms,
                 (
-                    pipeline[rule_id].last_error
+                    (runtime_error if rule_id in enabled_ids else "")
+                    or pipeline[rule_id].last_error
                     or (
                         "detector_start_failed"
                         if rule_id in enabled_ids

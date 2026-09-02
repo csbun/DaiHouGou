@@ -4,13 +4,16 @@ from collections import deque
 from pathlib import Path
 from urllib.parse import unquote
 
+import numpy as np
+
 from daihougou.detection_region import FULL_FRAME_REGION, DetectionRegion
 from daihougou.go2rtc import DiscoveryError
-from daihougou.rules import WELCOME_RULE_ID, SpeechAction
+from daihougou.rules import OBJECT_RULE_ID, WELCOME_RULE_ID, SpeechAction
 from daihougou.runtime import Runtime
 from daihougou.settings import SpeakerConfig
 from daihougou.storage import EventRecord, Storage
 from daihougou.vision.frame_source import FrameSample
+from daihougou.vision.object_detector import ObjectDetection
 from daihougou.vision.person_detector import PersonDetection
 
 
@@ -57,6 +60,7 @@ class FakeDetectionScheduler:
         self.fatal_error = False
         self.starts = 0
         self.stops = 0
+        self.object_samples: list[int] = []
 
     async def start(self) -> None:
         self.loaded = True
@@ -70,6 +74,12 @@ class FakeDetectionScheduler:
 
     async def detect(self, camera_id: str, sample: FrameSample) -> PersonDetection:
         return PersonDetection(False, 0.1, 1)
+
+    async def detect_objects(
+        self, camera_id: str, sample: FrameSample
+    ) -> ObjectDetection:
+        self.object_samples.append(sample.sequence)
+        return ObjectDetection((), 1)
 
 
 class FakeSpeakerManager:
@@ -509,6 +519,99 @@ def test_region_update_handles_internal_factory_type_error_once(
         )
         assert sources["back"] is old_back
         assert old_back.stop_count == 0
+        await runtime.stop()
+
+    asyncio.run(scenario())
+
+
+def test_region_update_keeps_old_runtime_managed_when_stop_fails(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        runtime, _discovery, sources, _scheduler, _source_calls = make_runtime(
+            tmp_path, discoveries=[("front",), ("front",)]
+        )
+        await runtime.start()
+        await runtime.set_rule_enabled("front", True)
+        old_source = sources["front"]
+        old_runtime = runtime._camera_runtimes["front"]
+        original_stop = old_source.stop
+
+        def failing_stop() -> None:
+            old_source.stop_count += 1
+            raise RuntimeError("stop failed")
+
+        old_source.stop = failing_stop  # type: ignore[method-assign]
+        region = DetectionRegion(0.1, 0.2, 0.6, 0.5)
+
+        await runtime.set_camera_detection_region("front", region)
+
+        camera = runtime.snapshot().cameras[0]
+        assert camera.detection_region == region
+        assert camera.stream == "degraded"
+        assert camera.last_error == "camera_start_failed"
+        assert runtime._camera_runtimes["front"] is old_runtime
+
+        old_source.stop = original_stop  # type: ignore[method-assign]
+        await runtime.refresh_cameras()
+        assert old_source.stopped is True
+        assert sources["front"] is not old_source
+        await runtime.stop()
+
+    asyncio.run(scenario())
+
+
+def test_region_update_retry_still_suppresses_first_object_frame(tmp_path: Path) -> None:
+    class ChangedFrameSource(FakeSource):
+        def __init__(self) -> None:
+            super().__init__()
+            self.samples = deque(
+                [
+                    FrameSample(1, 0, np.zeros((32, 32, 3), dtype=np.uint8)),
+                    FrameSample(2, 1, np.full((32, 32, 3), 255, dtype=np.uint8)),
+                ]
+            )
+
+        def wait_for_frame(
+            self, after_sequence: int, timeout: float
+        ) -> FrameSample | None:
+            if self.samples:
+                return self.samples.popleft()
+            time.sleep(0.005)
+            return None
+
+    async def scenario() -> None:
+        runtime, _discovery, sources, scheduler, _source_calls = make_runtime(
+            tmp_path, discoveries=[("front",), (), ("front",)]
+        )
+        await runtime.start()
+        await runtime.set_rule_enabled("front", OBJECT_RULE_ID, True)
+        attempts = 0
+
+        def retrying_factory(
+            url: str, size: int, region: DetectionRegion
+        ) -> FakeSource:
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise RuntimeError("start failed")
+            source = ChangedFrameSource()
+            sources["front"] = source
+            return source
+
+        runtime._frame_source_factory = retrying_factory
+        await runtime.set_camera_detection_region(
+            "front", DetectionRegion(0.1, 0.2, 0.6, 0.5)
+        )
+        await runtime.refresh_cameras()
+        await runtime.refresh_cameras()
+
+        deadline = time.monotonic() + 1
+        while (
+            runtime._camera_runtimes["front"].snapshot().last_sequence < 2
+            and time.monotonic() < deadline
+        ):
+            await asyncio.sleep(0.005)
+
+        assert scheduler.object_samples == [2]
         await runtime.stop()
 
     asyncio.run(scenario())

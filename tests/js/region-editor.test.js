@@ -9,12 +9,22 @@ const {
   drawRegion,
   moveRegion,
   resizeRegion,
+  saveStatusMessage,
 } = require("../../src/daihougou/static/region-editor.js");
 
 test("percentage parsing rejects an empty field instead of treating it as zero", () => {
   assert.equal(Number.isNaN(parsePercentage("")), true);
   assert.equal(Number.isNaN(parsePercentage("  ")), true);
   assert.equal(parsePercentage("12.5"), 0.125);
+});
+
+test("save status distinguishes a camera that is still starting", () => {
+  assert.equal(
+    saveStatusMessage({ stream: "starting", last_error: "" }),
+    "区域已保存，摄像头尚未恢复",
+  );
+  assert.equal(saveStatusMessage({ stream: "stopped", last_error: "" }), "区域已保存");
+  assert.equal(saveStatusMessage({ stream: "ready", last_error: "" }), "区域已保存");
 });
 
 test("draw clamps to the image and enforces two percent", () => {
