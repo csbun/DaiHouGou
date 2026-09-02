@@ -16,6 +16,11 @@ class FakeSpeaker:
         return SpeakResult(True, 1, 0)
 
 
+class FakeSnapshotter:
+    def capture(self, rtsp_url: str) -> bytes:
+        raise AssertionError("snapshot capture is not expected in this test")
+
+
 def settings_for(tmp_path: Path) -> Settings:
     return Settings.from_mapping(
         {
@@ -41,6 +46,7 @@ def test_production_app_builds_one_speaker_per_config(
         "DirectSpeaker",
         lambda user, password, did: created_dids.append(did) or FakeSpeaker(),
     )
+    monkeypatch.setattr(main_module, "CameraSnapshotter", FakeSnapshotter)
 
     app = create_production_app(settings_for(tmp_path))
 
@@ -90,6 +96,7 @@ def test_production_lifespan_discovers_once_and_loads_visual_stack_on_enable(
     monkeypatch.setattr(main_module, "PersonDetector", detector_factory)
     monkeypatch.setattr(main_module, "FfmpegFrameSource", source_factory)
     monkeypatch.setattr(main_module, "DirectSpeaker", lambda *args: FakeSpeaker())
+    monkeypatch.setattr(main_module, "CameraSnapshotter", FakeSnapshotter)
     monkeypatch.setattr(
         main_module,
         "create_app",

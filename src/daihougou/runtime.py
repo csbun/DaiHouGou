@@ -31,6 +31,10 @@ class Discovery(Protocol):
     def stream_names(self) -> tuple[str, ...]: ...
 
 
+class Snapshotter(Protocol):
+    def capture(self, rtsp_url: str) -> bytes: ...
+
+
 class ManagedScheduler(Protocol):
     loaded: bool
     status: str
@@ -217,6 +221,7 @@ class Runtime:
         speaker_manager: SpeakerManager | ManagedSpeakerManager,
         scheduler: DetectionScheduler | ManagedScheduler,
         frame_source_factory: FrameSourceFactory,
+        snapshotter: Snapshotter,
         leave_seconds: float,
         welcome_cooldown_seconds: float,
     ) -> None:
@@ -230,6 +235,8 @@ class Runtime:
         self._speaker_manager = speaker_manager
         self._scheduler = scheduler
         self._frame_source_factory = frame_source_factory
+        self._snapshotter = snapshotter
+        self._snapshot_semaphore = asyncio.Semaphore(1)
         self._leave_seconds = leave_seconds
         self._welcome_cooldown_seconds = welcome_cooldown_seconds
         self._available_stream_ids: frozenset[str] | None = None
@@ -328,6 +335,15 @@ class Runtime:
             await self._reconcile(
                 suppress_initial_object_for=frozenset({camera_id})
             )
+
+    async def capture_camera_snapshot(self, camera_id: str) -> bytes:
+        if not any(
+            camera.stream_id == camera_id for camera in self._storage.list_cameras()
+        ):
+            raise KeyError(camera_id)
+        rtsp_url = rtsp_stream_url(self._rtsp_base_url, camera_id)
+        async with self._snapshot_semaphore:
+            return await asyncio.to_thread(self._snapshotter.capture, rtsp_url)
 
     def welcome_phrases(self) -> tuple[str, ...]:
         return self._storage.welcome_phrases()

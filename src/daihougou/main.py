@@ -3,6 +3,7 @@ import os
 import uvicorn
 from fastapi import FastAPI
 
+from daihougou.camera_snapshot import CameraSnapshotter
 from daihougou.detection_region import DetectionRegion
 from daihougou.detection_scheduler import DetectionScheduler
 from daihougou.go2rtc import Go2RtcClient
@@ -54,6 +55,7 @@ def create_production_app(settings: Settings | None = None) -> FastAPI:
         speaker_manager=speaker_manager,
         scheduler=scheduler,
         frame_source_factory=frame_source_factory,
+        snapshotter=CameraSnapshotter(),
         leave_seconds=resolved.leave_seconds,
         welcome_cooldown_seconds=resolved.welcome_cooldown_seconds,
     )

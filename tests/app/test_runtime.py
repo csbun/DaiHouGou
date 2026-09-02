@@ -92,12 +92,23 @@ class FakeSpeakerManager:
         return True
 
 
+class FakeSnapshotter:
+    def __init__(self, image: bytes = b"\xff\xd8snapshot") -> None:
+        self.image = image
+        self.urls: list[str] = []
+
+    def capture(self, rtsp_url: str) -> bytes:
+        self.urls.append(rtsp_url)
+        return self.image
+
+
 def make_runtime(
     tmp_path: Path,
     discoveries: list[tuple[str, ...] | Exception],
     *,
     broken_streams: frozenset[str] = frozenset(),
     speaker_manager: FakeSpeakerManager | None = None,
+    snapshotter: FakeSnapshotter | None = None,
 ) -> tuple[
     Runtime,
     FakeDiscovery,
@@ -130,6 +141,7 @@ def make_runtime(
         speaker_manager=speaker_manager or FakeSpeakerManager(storage),
         scheduler=scheduler,
         frame_source_factory=source_factory,
+        snapshotter=snapshotter or FakeSnapshotter(),
         leave_seconds=10,
         welcome_cooldown_seconds=60,
     )
@@ -517,4 +529,103 @@ def test_unknown_camera_region_update_raises_without_creating_source(tmp_path: P
         assert source_calls == []
         await runtime.stop()
 
+    asyncio.run(scenario())
+
+
+def test_snapshot_uses_encoded_url_while_disabled_without_starting_detection(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        snapshotter = FakeSnapshotter()
+        runtime, _discovery, sources, _scheduler, source_calls = make_runtime(
+            tmp_path,
+            discoveries=[("room/a b",)],
+            snapshotter=snapshotter,
+        )
+        await runtime.start()
+
+        image = await runtime.capture_camera_snapshot("room/a b")
+
+        assert image == b"\xff\xd8snapshot"
+        assert snapshotter.urls == ["rtsp://127.0.0.1:8554/room%2Fa%20b"]
+        assert sources == {}
+        assert source_calls == []
+        await runtime.stop()
+
+    asyncio.run(scenario())
+
+
+def test_snapshot_rejects_unknown_camera(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        snapshotter = FakeSnapshotter()
+        runtime, _discovery, _sources, _scheduler, _source_calls = make_runtime(
+            tmp_path, discoveries=[("front",)], snapshotter=snapshotter
+        )
+        await runtime.start()
+
+        try:
+            await runtime.capture_camera_snapshot("missing")
+        except KeyError as error:
+            assert error.args == ("missing",)
+        else:
+            raise AssertionError("unknown camera was accepted")
+
+        assert snapshotter.urls == []
+        await runtime.stop()
+
+    asyncio.run(scenario())
+
+
+def test_snapshots_are_serialized_without_holding_runtime_lock(tmp_path: Path) -> None:
+    class BlockingSnapshotter:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+            self.first_entered = asyncio.Event()
+            self.release_first = asyncio.Event()
+            self.second_entered = asyncio.Event()
+
+        def capture(self, rtsp_url: str) -> bytes:
+            call_number = len(self.calls) + 1
+            self.calls.append(rtsp_url)
+            loop = asyncio.run_coroutine_threadsafe(
+                self._mark_and_wait(call_number), event_loop
+            )
+            loop.result(timeout=2)
+            return b"\xff\xd8snapshot"
+
+        async def _mark_and_wait(self, call_number: int) -> None:
+            if call_number == 1:
+                self.first_entered.set()
+                await self.release_first.wait()
+            else:
+                self.second_entered.set()
+
+    async def scenario() -> None:
+        nonlocal event_loop
+        event_loop = asyncio.get_running_loop()
+        snapshotter = BlockingSnapshotter()
+        runtime, _discovery, _sources, _scheduler, _source_calls = make_runtime(
+            tmp_path,
+            discoveries=[("front", "back")],
+            snapshotter=snapshotter,  # type: ignore[arg-type]
+        )
+        await runtime.start()
+
+        first = asyncio.create_task(runtime.capture_camera_snapshot("front"))
+        await asyncio.wait_for(snapshotter.first_entered.wait(), timeout=1)
+        second = asyncio.create_task(runtime.capture_camera_snapshot("back"))
+        await asyncio.sleep(0.02)
+        assert snapshotter.second_entered.is_set() is False
+
+        await asyncio.wait_for(
+            runtime.set_camera_speaker("front", "bedroom"), timeout=1
+        )
+        snapshotter.release_first.set()
+        await asyncio.gather(first, second)
+
+        assert snapshotter.second_entered.is_set() is True
+        assert len(snapshotter.calls) == 2
+        await runtime.stop()
+
+    event_loop: asyncio.AbstractEventLoop
     asyncio.run(scenario())

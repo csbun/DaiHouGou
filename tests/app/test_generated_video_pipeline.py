@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 
 from daihougou.detection_scheduler import DetectionScheduler
+from daihougou.detection_region import DetectionRegion
 from daihougou.runtime import Runtime
 from daihougou.settings import SpeakerConfig
 from daihougou.speaker import SpeakResult
@@ -75,6 +76,11 @@ class FakeDiscovery:
         return ("front", "back")
 
 
+class FakeSnapshotter:
+    def capture(self, rtsp_url: str) -> bytes:
+        raise AssertionError("snapshot capture is not expected in this test")
+
+
 def test_generated_video_routes_two_cameras_through_one_detector(
     tmp_path: Path,
 ) -> None:
@@ -95,12 +101,16 @@ def test_generated_video_routes_two_cameras_through_one_detector(
         scheduler = DetectionScheduler(detector_factory)
         sources: dict[str, FfmpegFrameSource] = {}
 
-        def source_factory(url: str) -> FfmpegFrameSource:
+        def source_factory(
+            url: str, size: int, region: DetectionRegion
+        ) -> FfmpegFrameSource:
             stream_id = url.rsplit("/", 1)[-1]
             transition = 3 if stream_id == "front" else 4
             source = FfmpegFrameSource(
                 url,
+                size=size,
                 process_factory=generated_video_process(transition),
+                region=region,
             )
             sources[stream_id] = source
             return source
@@ -116,6 +126,7 @@ def test_generated_video_routes_two_cameras_through_one_detector(
             speaker_manager=manager,
             scheduler=scheduler,
             frame_source_factory=source_factory,
+            snapshotter=FakeSnapshotter(),
             leave_seconds=10,
             welcome_cooldown_seconds=60,
         )
