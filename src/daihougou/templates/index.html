@@ -99,6 +99,9 @@
                 {% elif camera.available is sameas false %}未发现
                 {% else %}状态未知{% endif %}
               </span>
+              <a class="camera-region-link" href="{{ camera_region_urls[camera.stream_id] }}">
+                检测区域{% if not camera.detection_region.is_full_frame %}<span>已划定</span>{% endif %}
+              </a>
             </div>
 
             <dl class="camera-statuses">

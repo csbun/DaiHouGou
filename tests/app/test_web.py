@@ -1,9 +1,12 @@
 import re
 from dataclasses import replace
+from urllib.parse import urlencode
 
 import pytest
 from fastapi.testclient import TestClient
 
+from daihougou.camera_snapshot import SnapshotUnavailable
+from daihougou.detection_region import DetectionRegion, FULL_FRAME_REGION
 from daihougou.runtime import CameraView, RuntimeSnapshot, SpeakerOption
 from daihougou.storage import StoredEvent, normalize_welcome_phrases
 from daihougou.web import create_app
@@ -14,6 +17,7 @@ def snapshot_fixture(
     camera_ids: tuple[str, ...] | None = None,
     *,
     rules_enabled: bool = True,
+    detection_region: DetectionRegion = FULL_FRAME_REGION,
 ) -> RuntimeSnapshot:
     names = list(camera_ids) if camera_ids is not None else ["front", "back"] + [
         f"camera_{number}" for number in range(3, camera_count + 1)
@@ -32,6 +36,7 @@ def snapshot_fixture(
             last_detection_latency_ms=4 if rules_enabled else None,
             last_error="",
             latest_trigger=None,
+            detection_region=detection_region,
         )
         for name in names[:camera_count]
     )
@@ -55,14 +60,24 @@ class FakeRuntime:
         camera_ids: tuple[str, ...] | None = None,
         *,
         rules_enabled: bool = True,
+        detection_region: DetectionRegion = FULL_FRAME_REGION,
+        snapshot_bytes: bytes = b"\xff\xd8snapshot",
+        snapshot_error: Exception | None = None,
     ) -> None:
         self.refresh_calls = 0
         self.rule_updates: list[tuple[str, bool]] = []
         self.speaker_updates: list[tuple[str, str]] = []
         self.phrase_updates: list[list[str]] = []
+        self.snapshot_calls: list[str] = []
+        self.region_updates: list[tuple[str, DetectionRegion]] = []
+        self._snapshot_bytes = snapshot_bytes
+        self._snapshot_error = snapshot_error
         self._phrases = ("你好呀，欢迎回来。",)
         self._snapshot = snapshot_fixture(
-            camera_count, camera_ids, rules_enabled=rules_enabled
+            camera_count,
+            camera_ids,
+            rules_enabled=rules_enabled,
+            detection_region=detection_region,
         )
 
     async def start(self) -> None:
@@ -101,6 +116,30 @@ class FakeRuntime:
             raise ValueError("unknown speaker")
         self.speaker_updates.append((camera_id, speaker_id))
 
+    async def capture_camera_snapshot(self, camera_id: str) -> bytes:
+        if camera_id not in {camera.stream_id for camera in self._snapshot.cameras}:
+            raise KeyError(camera_id)
+        self.snapshot_calls.append(camera_id)
+        if self._snapshot_error is not None:
+            raise self._snapshot_error
+        return self._snapshot_bytes
+
+    async def set_camera_detection_region(
+        self, camera_id: str, region: DetectionRegion
+    ) -> None:
+        if camera_id not in {camera.stream_id for camera in self._snapshot.cameras}:
+            raise KeyError(camera_id)
+        self.region_updates.append((camera_id, region))
+        self._snapshot = replace(
+            self._snapshot,
+            cameras=tuple(
+                replace(camera, detection_region=region)
+                if camera.stream_id == camera_id
+                else camera
+                for camera in self._snapshot.cameras
+            ),
+        )
+
     def welcome_phrases(self) -> tuple[str, ...]:
         return self._phrases
 
@@ -130,6 +169,57 @@ def test_home_lists_cameras_and_links_to_settings_without_phrase_editor() -> Non
     assert "客厅音箱" in response.text
     assert "123456789" not in response.text
     assert response.cookies["daihougou_csrf"] == "fixed-token"
+
+
+def test_home_links_each_camera_to_independent_detection_region_page() -> None:
+    runtime = FakeRuntime(
+        camera_count=1,
+        camera_ids=("room/a b",),
+        detection_region=DetectionRegion(0.1, 0.2, 0.6, 0.5),
+    )
+    with TestClient(create_app(runtime, csrf_token="fixed-token")) as client:
+        response = client.get("/")
+
+    expected = f"/camera-region?{urlencode({'camera_id': 'room/a b'})}"
+    assert expected.replace("&", "&amp;") in response.text
+    assert "检测区域" in response.text
+    assert "已划定" in response.text
+    assert "0.600000" not in response.text
+
+
+def test_home_omits_region_status_for_full_frame() -> None:
+    runtime = FakeRuntime()
+    with TestClient(create_app(runtime, csrf_token="fixed-token")) as client:
+        response = client.get("/")
+
+    assert "检测区域" in response.text
+    assert "已划定" not in response.text
+
+
+def test_camera_region_page_renders_editor_for_encoded_camera_id() -> None:
+    runtime = FakeRuntime(camera_count=1, camera_ids=("room/a b",))
+    with TestClient(create_app(runtime, csrf_token="fixed-token")) as client:
+        response = client.get(
+            f"/camera-region?{urlencode({'camera_id': 'room/a b'})}"
+        )
+
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
+    assert "room/a b" in response.text
+    assert "data-region-preview" in response.text
+    assert response.text.count("data-region-input=") == 4
+    assert "刷新画面" in response.text
+    assert "恢复全画面" in response.text
+    assert "取消" in response.text
+    assert "保存" in response.text
+
+
+def test_camera_region_page_rejects_unknown_camera() -> None:
+    runtime = FakeRuntime()
+    with TestClient(create_app(runtime, csrf_token="fixed-token")) as client:
+        response = client.get("/camera-region?camera_id=missing")
+
+    assert response.status_code == 404
 
 
 def test_home_places_recent_records_before_cameras_and_shows_refresh_icon_and_speech() -> None:
@@ -326,6 +416,266 @@ def test_valid_welcome_phrases_redirect_back_to_settings() -> None:
     assert runtime.phrase_updates == [["Welcome home!"]]
 
 
+def test_camera_snapshot_returns_uncached_jpeg_bytes() -> None:
+    runtime = FakeRuntime(snapshot_bytes=b"\xff\xd8exact-jpeg")
+    with TestClient(create_app(runtime, csrf_token="fixed-token")) as client:
+        client.get("/")
+        response = client.post(
+            "/commands/camera-snapshot",
+            data={"csrf_token": "fixed-token", "camera_id": "front"},
+            headers={"Origin": "http://testserver"},
+        )
+
+    assert response.status_code == 200
+    assert response.content == b"\xff\xd8exact-jpeg"
+    assert response.headers["content-type"].startswith("image/jpeg")
+    assert response.headers["cache-control"] == "no-store"
+    assert runtime.snapshot_calls == ["front"]
+
+
+def test_camera_snapshot_failure_is_stable_and_uncached() -> None:
+    error = SnapshotUnavailable("camera_snapshot_unavailable")
+    error.__cause__ = RuntimeError("rtsp://owner:password@camera/private")
+    runtime = FakeRuntime(snapshot_error=error)
+    with TestClient(create_app(runtime, csrf_token="fixed-token")) as client:
+        client.get("/")
+        response = client.post(
+            "/commands/camera-snapshot",
+            data={"csrf_token": "fixed-token", "camera_id": "front"},
+            headers={"Origin": "http://testserver"},
+        )
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "camera_snapshot_unavailable"}
+    assert response.headers["cache-control"] == "no-store"
+    assert "password" not in response.text
+    assert "rtsp://" not in response.text
+
+
+def test_camera_snapshot_rejects_unknown_camera_without_runtime_call() -> None:
+    runtime = FakeRuntime()
+    with TestClient(create_app(runtime, csrf_token="fixed-token")) as client:
+        client.get("/")
+        response = client.post(
+            "/commands/camera-snapshot",
+            data={"csrf_token": "fixed-token", "camera_id": "missing"},
+            headers={"Origin": "http://testserver"},
+        )
+
+    assert response.status_code == 404
+    assert runtime.snapshot_calls == []
+
+
+def test_camera_region_json_save_uses_six_decimal_value_and_reports_state() -> None:
+    runtime = FakeRuntime(rules_enabled=False)
+    with TestClient(create_app(runtime, csrf_token="fixed-token")) as client:
+        client.get("/")
+        client.post(
+            "/commands/camera-snapshot",
+            data={"csrf_token": "fixed-token", "camera_id": "front"},
+            headers={"Origin": "http://testserver"},
+        )
+        response = client.post(
+            "/commands/camera-region",
+            data={
+                "csrf_token": "fixed-token",
+                "camera_id": "front",
+                "x": "0.12345649",
+                "y": "0.2",
+                "width": "0.6",
+                "height": "0.5",
+            },
+            headers={"Origin": "http://testserver", "Accept": "application/json"},
+        )
+
+    expected = DetectionRegion(0.123456, 0.2, 0.6, 0.5)
+    assert response.status_code == 200
+    assert runtime.region_updates == [("front", expected)]
+    assert response.json() == {
+        "saved": True,
+        "region": {"x": 0.123456, "y": 0.2, "width": 0.6, "height": 0.5},
+        "camera": {"stream_id": "front", "stream": "stopped", "last_error": ""},
+    }
+
+
+def test_camera_region_form_save_redirects_to_encoded_editor() -> None:
+    runtime = FakeRuntime(camera_count=1, camera_ids=("room/a b",))
+    with TestClient(create_app(runtime, csrf_token="fixed-token")) as client:
+        client.get("/")
+        response = client.post(
+            "/commands/camera-region",
+            data={
+                "csrf_token": "fixed-token",
+                "camera_id": "room/a b",
+                "x": "0",
+                "y": "0",
+                "width": "1",
+                "height": "1",
+            },
+            headers={"Origin": "http://testserver"},
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == (
+        f"/camera-region?{urlencode({'camera_id': 'room/a b', 'saved': '1'})}"
+    )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("x", "text"),
+        ("x", "nan"),
+        ("x", "inf"),
+        ("width", "0.019"),
+        ("width", "1.1"),
+    ],
+)
+def test_camera_region_rejects_invalid_values_without_writing(
+    field: str, value: str
+) -> None:
+    runtime = FakeRuntime()
+    data = {
+        "csrf_token": "fixed-token",
+        "camera_id": "front",
+        "x": "0",
+        "y": "0",
+        "width": "1",
+        "height": "1",
+    }
+    data[field] = value
+    with TestClient(create_app(runtime, csrf_token="fixed-token")) as client:
+        client.get("/")
+        response = client.post(
+            "/commands/camera-region",
+            data=data,
+            headers={"Origin": "http://testserver", "Accept": "application/json"},
+        )
+
+    assert response.status_code == 422
+    assert runtime.region_updates == []
+
+
+def test_invalid_camera_region_form_rerenders_editor() -> None:
+    runtime = FakeRuntime()
+    with TestClient(create_app(runtime, csrf_token="fixed-token")) as client:
+        client.get("/")
+        response = client.post(
+            "/commands/camera-region",
+            data={
+                "csrf_token": "fixed-token",
+                "camera_id": "front",
+                "x": "invalid",
+                "y": "0",
+                "width": "1",
+                "height": "1",
+            },
+            headers={"Origin": "http://testserver"},
+        )
+
+    assert response.status_code == 422
+    assert "检测区域格式无效" in response.text
+    assert "front" in response.text
+    assert runtime.region_updates == []
+
+
+@pytest.mark.parametrize(
+    ("path", "data"),
+    [
+        ("/commands/camera-snapshot", {"camera_id": "front"}),
+        (
+            "/commands/camera-region",
+            {
+                "camera_id": "front",
+                "x": "0",
+                "y": "0",
+                "width": "1",
+                "height": "1",
+            },
+        ),
+    ],
+)
+def test_region_commands_reject_wrong_csrf_without_runtime_calls(
+    path: str, data: dict[str, str]
+) -> None:
+    runtime = FakeRuntime()
+    with TestClient(create_app(runtime, csrf_token="fixed-token")) as client:
+        client.get("/")
+        response = client.post(
+            path,
+            data={**data, "csrf_token": "wrong-token"},
+            headers={"Origin": "http://testserver"},
+        )
+
+    assert response.status_code == 403
+    assert runtime.snapshot_calls == []
+    assert runtime.region_updates == []
+
+
+def test_camera_region_requires_snapshot_for_non_full_region_but_allows_reset() -> None:
+    runtime = FakeRuntime()
+    with TestClient(create_app(runtime, csrf_token="fixed-token")) as client:
+        client.get("/")
+        blocked = client.post(
+            "/commands/camera-region",
+            data={
+                "csrf_token": "fixed-token",
+                "camera_id": "front",
+                "x": "0.1",
+                "y": "0.1",
+                "width": "0.8",
+                "height": "0.8",
+            },
+            headers={"Origin": "http://testserver", "Accept": "application/json"},
+        )
+        reset = client.post(
+            "/commands/camera-region",
+            data={
+                "csrf_token": "fixed-token",
+                "camera_id": "front",
+                "x": "0",
+                "y": "0",
+                "width": "1",
+                "height": "1",
+            },
+            headers={"Origin": "http://testserver", "Accept": "application/json"},
+        )
+
+    assert blocked.status_code == 409
+    assert reset.status_code == 200
+    assert runtime.region_updates == [("front", FULL_FRAME_REGION)]
+
+
+def test_camera_region_last_valid_save_wins() -> None:
+    runtime = FakeRuntime()
+    first = DetectionRegion(0.1, 0.1, 0.8, 0.8)
+    second = DetectionRegion(0.2, 0.2, 0.6, 0.6)
+    with TestClient(create_app(runtime, csrf_token="fixed-token")) as client:
+        client.get("/")
+        client.post(
+            "/commands/camera-snapshot",
+            data={"csrf_token": "fixed-token", "camera_id": "front"},
+            headers={"Origin": "http://testserver"},
+        )
+        for region in (first, second):
+            response = client.post(
+                "/commands/camera-region",
+                data={
+                    "csrf_token": "fixed-token",
+                    "camera_id": "front",
+                    "x": str(region.x),
+                    "y": str(region.y),
+                    "width": str(region.width),
+                    "height": str(region.height),
+                },
+                headers={"Origin": "http://testserver", "Accept": "application/json"},
+            )
+            assert response.status_code == 200
+
+    assert runtime.region_updates == [("front", first), ("front", second)]
+
+
 @pytest.mark.parametrize(
     ("path", "data"),
     [
@@ -336,6 +686,11 @@ def test_valid_welcome_phrases_redirect_back_to_settings() -> None:
             {"camera_id": "front", "speaker_id": "living_room"},
         ),
         ("/commands/welcome-phrases", {"phrases": "你好"}),
+        ("/commands/camera-snapshot", {"camera_id": "front"}),
+        (
+            "/commands/camera-region",
+            {"camera_id": "front", "x": "0", "y": "0", "width": "1", "height": "1"},
+        ),
     ],
 )
 def test_all_commands_reject_missing_csrf(path: str, data: dict[str, str]) -> None:
@@ -361,6 +716,11 @@ def test_all_commands_reject_missing_csrf(path: str, data: dict[str, str]) -> No
             {"camera_id": "front", "speaker_id": "living_room"},
         ),
         ("/commands/welcome-phrases", {"phrases": "你好"}),
+        ("/commands/camera-snapshot", {"camera_id": "front"}),
+        (
+            "/commands/camera-region",
+            {"camera_id": "front", "x": "0", "y": "0", "width": "1", "height": "1"},
+        ),
     ],
 )
 def test_all_commands_reject_cross_origin(path: str, data: dict[str, str]) -> None:

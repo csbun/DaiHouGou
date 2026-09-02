@@ -1,20 +1,24 @@
 from __future__ import annotations
 
 import inspect
+import math
 import secrets
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Protocol
-from urllib.parse import urlsplit
+from urllib.parse import urlencode, urlsplit
 
 from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
+from daihougou.camera_snapshot import SnapshotUnavailable
+from daihougou.detection_region import DetectionRegion
 from daihougou.object_catalog import SUPPORTED_CATEGORY_NAMES
 from daihougou.rules import BUILTIN_RULE_IDS
-from daihougou.runtime import RuntimeSnapshot
+from daihougou.runtime import CameraView, RuntimeSnapshot
 
 PACKAGE_DIR = Path(__file__).parent
 
@@ -31,6 +35,12 @@ class ManagedRuntime(Protocol):
     ) -> None: ...
 
     async def set_camera_speaker(self, camera_id: str, speaker_id: str) -> None: ...
+
+    async def capture_camera_snapshot(self, camera_id: str) -> bytes: ...
+
+    async def set_camera_detection_region(
+        self, camera_id: str, region: DetectionRegion
+    ) -> None: ...
 
     def welcome_phrases(self) -> tuple[str, ...]: ...
 
@@ -67,6 +77,8 @@ def _phrase_error(error: ValueError) -> str:
 def create_app(runtime: ManagedRuntime, csrf_token: str | None = None) -> FastAPI:
     token = csrf_token or secrets.token_urlsafe(32)
     templates = Jinja2Templates(directory=PACKAGE_DIR / "templates")
+    snapshot_ready_at: dict[str, float] = {}
+    snapshot_capability_seconds = 60 * 60
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -82,14 +94,80 @@ def create_app(runtime: ManagedRuntime, csrf_token: str | None = None) -> FastAP
     def render_home(
         request: Request,
     ) -> HTMLResponse:
+        snapshot = runtime.snapshot()
         response = templates.TemplateResponse(
             request=request,
             name="index.html",
             context={
-                "snapshot": runtime.snapshot(),
+                "snapshot": snapshot,
                 "csrf_token": token,
                 "supported_categories": tuple(SUPPORTED_CATEGORY_NAMES.items()),
+                "camera_region_urls": {
+                    camera.stream_id: f"/camera-region?{urlencode({'camera_id': camera.stream_id})}"
+                    for camera in snapshot.cameras
+                },
             },
+        )
+        return prepare_html(response)
+
+    def find_camera(camera_id: str) -> CameraView:
+        camera = next(
+            (
+                item
+                for item in runtime.snapshot().cameras
+                if item.stream_id == camera_id
+            ),
+            None,
+        )
+        if camera is None:
+            raise HTTPException(status_code=404, detail="unknown_camera")
+        return camera
+
+    def render_camera_region(
+        request: Request,
+        camera: CameraView,
+        *,
+        region: DetectionRegion | dict[str, str] | None = None,
+        region_error: str = "",
+        saved: bool = False,
+        status_code: int = 200,
+    ) -> HTMLResponse:
+        resolved_region: DetectionRegion | dict[str, str] = (
+            region or camera.detection_region
+        )
+        fields = ("x", "y", "width", "height")
+        if isinstance(resolved_region, DetectionRegion):
+            region_values = {
+                field: f"{getattr(resolved_region, field):.6f}" for field in fields
+            }
+            region_display = {
+                field: f"{getattr(resolved_region, field) * 100:.2f}"
+                for field in fields
+            }
+        else:
+            region_values = resolved_region
+            region_display = {}
+            for field, value in resolved_region.items():
+                try:
+                    parsed = float(value)
+                except (TypeError, ValueError, OverflowError):
+                    region_display[field] = value
+                else:
+                    region_display[field] = (
+                        f"{parsed * 100:.2f}" if math.isfinite(parsed) else value
+                    )
+        response = templates.TemplateResponse(
+            request=request,
+            name="camera_region.html",
+            context={
+                "camera": camera,
+                "csrf_token": token,
+                "region_values": region_values,
+                "region_display": region_display,
+                "region_error": region_error,
+                "saved": saved,
+            },
+            status_code=status_code,
         )
         return prepare_html(response)
 
@@ -136,6 +214,18 @@ def create_app(runtime: ManagedRuntime, csrf_token: str | None = None) -> FastAP
     @app.get("/settings", response_class=HTMLResponse)
     async def settings(request: Request) -> HTMLResponse:
         return render_settings(request)
+
+    @app.get("/camera-region", response_class=HTMLResponse)
+    async def camera_region(
+        request: Request,
+        camera_id: str = "",
+        saved: str = "",
+    ) -> HTMLResponse:
+        return render_camera_region(
+            request,
+            find_camera(camera_id),
+            saved=saved == "1",
+        )
 
     @app.post("/commands/refresh-cameras")
     async def refresh_cameras(
@@ -204,6 +294,104 @@ def create_app(runtime: ManagedRuntime, csrf_token: str | None = None) -> FastAP
         except (KeyError, ValueError) as error:
             raise HTTPException(status_code=404, detail="unknown_camera_or_speaker") from error
         return RedirectResponse("/", status_code=303)
+
+    @app.post("/commands/camera-snapshot")
+    async def camera_snapshot(
+        request: Request,
+        csrf_token: str = Form(default=""),
+        camera_id: str = Form(default=""),
+    ) -> Response:
+        _verify_write_request(request, csrf_token, token)
+        find_camera(camera_id)
+        try:
+            payload = await runtime.capture_camera_snapshot(camera_id)
+        except KeyError as error:
+            raise HTTPException(status_code=404, detail="unknown_camera") from error
+        except SnapshotUnavailable:
+            snapshot_ready_at.pop(camera_id, None)
+            return JSONResponse(
+                {"detail": "camera_snapshot_unavailable"},
+                status_code=503,
+                headers={"Cache-Control": "no-store"},
+            )
+        snapshot_ready_at[camera_id] = time.monotonic()
+        return Response(
+            content=payload,
+            media_type="image/jpeg",
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @app.post("/commands/camera-region")
+    async def update_camera_region(
+        request: Request,
+        csrf_token: str = Form(default=""),
+        camera_id: str = Form(default=""),
+        x: str = Form(default=""),
+        y: str = Form(default=""),
+        width: str = Form(default=""),
+        height: str = Form(default=""),
+    ) -> Response:
+        _verify_write_request(request, csrf_token, token)
+        camera = find_camera(camera_id)
+        values = {"x": x, "y": y, "width": width, "height": height}
+        wants_json = "application/json" in request.headers.get("accept", "")
+        try:
+            region = DetectionRegion(float(x), float(y), float(width), float(height))
+        except (TypeError, ValueError, OverflowError):
+            if wants_json:
+                raise HTTPException(
+                    status_code=422, detail="invalid_detection_region"
+                ) from None
+            return render_camera_region(
+                request,
+                camera,
+                region=values,
+                region_error="检测区域格式无效",
+                status_code=422,
+            )
+
+        captured_at = snapshot_ready_at.get(camera_id)
+        has_current_snapshot = (
+            captured_at is not None
+            and time.monotonic() - captured_at <= snapshot_capability_seconds
+        )
+        if not region.is_full_frame and not has_current_snapshot:
+            if wants_json:
+                raise HTTPException(
+                    status_code=409, detail="camera_snapshot_required"
+                )
+            return render_camera_region(
+                request,
+                camera,
+                region=values,
+                region_error="请先获取当前画面",
+                status_code=409,
+            )
+        try:
+            await runtime.set_camera_detection_region(camera_id, region)
+        except KeyError as error:
+            raise HTTPException(status_code=404, detail="unknown_camera") from error
+
+        camera = find_camera(camera_id)
+        if wants_json:
+            return JSONResponse(
+                {
+                    "saved": True,
+                    "region": {
+                        "x": region.x,
+                        "y": region.y,
+                        "width": region.width,
+                        "height": region.height,
+                    },
+                    "camera": {
+                        "stream_id": camera.stream_id,
+                        "stream": camera.stream,
+                        "last_error": camera.last_error,
+                    },
+                }
+            )
+        query = urlencode({"camera_id": camera_id, "saved": "1"})
+        return RedirectResponse(f"/camera-region?{query}", status_code=303)
 
     @app.post("/commands/welcome-phrases", response_class=HTMLResponse)
     async def update_welcome_phrases(
