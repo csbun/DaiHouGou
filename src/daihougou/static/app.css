@@ -15,6 +15,10 @@ body {
   margin: 0;
 }
 
+body.has-bottom-tabs {
+  padding-bottom: calc(72px + env(safe-area-inset-bottom));
+}
+
 h1,
 h2,
 h3,
@@ -24,7 +28,7 @@ p {
 
 h1 {
   margin-bottom: 0;
-  font-size: 26px;
+  font-size: 22px;
 }
 
 h2 {
@@ -39,8 +43,8 @@ h3 {
 }
 
 .topbar {
-  min-height: 92px;
-  padding: 18px max(24px, calc((100% - 1120px) / 2));
+  min-height: 64px;
+  padding: 11px max(24px, calc((100% - 1120px) / 2));
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -76,6 +80,46 @@ h3 {
 
 .topbar-link:hover {
   background: #343a3f;
+}
+
+.bottom-tabs {
+  position: fixed;
+  z-index: 20;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  min-height: 64px;
+  padding: 6px max(18px, calc((100% - 520px) / 2)) max(6px, env(safe-area-inset-bottom));
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  align-items: stretch;
+  border-top: 1px solid #d8dde1;
+  background: rgb(255 255 255 / 96%);
+  box-shadow: 0 -4px 16px rgb(31 36 40 / 8%);
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
+}
+
+.bottom-tab {
+  min-width: 0;
+  min-height: 48px;
+  display: grid;
+  place-items: center;
+  color: #60676d;
+  border-radius: 4px;
+  font-size: 14px;
+  font-weight: 650;
+  text-decoration: none;
+}
+
+.bottom-tab:hover {
+  color: #202428;
+  background: #f0f3f5;
+}
+
+.bottom-tab.is-active {
+  color: #176b47;
+  background: #e6f2ec;
 }
 
 main {
@@ -859,8 +903,8 @@ tbody tr:last-child td {
 
 @media (max-width: 760px) {
   .topbar {
-    min-height: 82px;
-    padding: 15px 18px;
+    min-height: 58px;
+    padding: 9px 18px;
   }
 
   .topbar-actions {
@@ -964,7 +1008,7 @@ tbody tr:last-child td {
 
 @media (max-width: 440px) {
   .topbar {
-    align-items: flex-start;
+    align-items: center;
   }
 
   .topbar-link {

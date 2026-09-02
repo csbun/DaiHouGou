@@ -1,0 +1,5 @@
+<nav class="bottom-tabs" aria-label="主导航">
+  <a class="bottom-tab{% if active_tab == 'status' %} is-active{% endif %}" href="/"{% if active_tab == 'status' %} aria-current="page"{% endif %}>状态</a>
+  <a class="bottom-tab{% if active_tab == 'logs' %} is-active{% endif %}" href="/logs"{% if active_tab == 'logs' %} aria-current="page"{% endif %}>日志</a>
+  <a class="bottom-tab{% if active_tab == 'settings' %} is-active{% endif %}" href="/settings"{% if active_tab == 'settings' %} aria-current="page"{% endif %}>设置</a>
+</nav>

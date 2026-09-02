@@ -1,0 +1,12 @@
+<header class="topbar">
+  <div class="brand">
+    <h1>大口九</h1>
+  </div>
+  <div class="topbar-actions">
+    <span class="overall status status-{{ snapshot.overall }}">
+      {% if snapshot.overall == 'ready' %}运行正常
+      {% elif snapshot.overall == 'unhealthy' %}运行异常
+      {% else %}需要检查{% endif %}
+    </span>
+  </div>
+</header>

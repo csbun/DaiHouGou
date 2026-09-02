@@ -6,14 +6,8 @@
     <title>设置 - 大口九</title>
     <link rel="stylesheet" href="{{ url_for('static', path='/app.css') }}">
   </head>
-  <body>
-    <header class="topbar">
-      <div class="brand">
-        <p>家庭儿童陪护</p>
-        <h1>大口九</h1>
-      </div>
-      <a class="topbar-link" href="/">返回管理页</a>
-    </header>
+  <body class="has-bottom-tabs">
+    {% include "_header.html" %}
 
     <main class="settings-main">
       <section aria-labelledby="settings-title">
@@ -52,5 +46,6 @@
         </div>
       </section>
     </main>
+    {% include "_bottom_tabs.html" %}
   </body>
 </html>

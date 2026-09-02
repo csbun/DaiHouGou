@@ -240,7 +240,7 @@ def test_camera_region_page_rejects_unknown_camera() -> None:
     assert response.status_code == 404
 
 
-def test_home_places_recent_records_before_cameras_and_shows_refresh_icon_and_speech() -> None:
+def test_home_shows_status_tab_without_recent_records() -> None:
     runtime = FakeRuntime()
     runtime._snapshot = replace(
         runtime._snapshot,
@@ -262,10 +262,55 @@ def test_home_places_recent_records_before_cameras_and_shows_refresh_icon_and_sp
         response = client.get("/")
 
     assert response.status_code == 200
-    assert response.text.index('id="events-title"') < response.text.index('id="cameras-title"')
-    assert 'aria-label="刷新摄像头"' in response.text
-    assert ">刷新摄像头<" not in response.text
+    assert 'aria-current="page"' in response.text
+    assert 'href="/logs"' in response.text
+    assert 'href="/settings"' in response.text
+    assert 'id="events-title"' not in response.text
+    assert "欢迎回家" not in response.text
+    assert "家庭儿童陪护" not in response.text
+
+
+def test_logs_page_contains_recent_records_and_marks_logs_tab_active() -> None:
+    runtime = FakeRuntime()
+    runtime._snapshot = replace(
+        runtime._snapshot,
+        events=(
+            StoredEvent(
+                id=1,
+                occurred_at="2026-09-01T12:34:56+00:00",
+                kind="speaker_completed",
+                rule_id="welcome_on_person_entry",
+                camera_id="front",
+                speaker_id="living_room",
+                success=True,
+                latency_ms=12,
+                details_json='{"text": "欢迎回家", "code": 0}',
+            ),
+        ),
+    )
+    with TestClient(create_app(runtime, csrf_token="fixed-token")) as client:
+        response = client.get("/logs")
+
+    assert response.status_code == 200
+    assert 'id="events-title"' in response.text
     assert "欢迎回家" in response.text
+    assert "家庭儿童陪护" not in response.text
+    assert response.text.count('aria-current="page"') == 1
+    assert ">日志<" in response.text
+
+
+def test_settings_page_uses_settings_tab_without_back_link() -> None:
+    runtime = FakeRuntime()
+    with TestClient(create_app(runtime, csrf_token="fixed-token")) as client:
+        response = client.get("/settings")
+
+    assert response.status_code == 200
+    assert 'href="/"' in response.text
+    assert 'href="/logs"' in response.text
+    assert ">返回管理页<" not in response.text
+    assert "家庭儿童陪护" not in response.text
+    assert response.text.count('aria-current="page"') == 1
+    assert ">设置<" in response.text
 
 
 def test_settings_page_edits_welcome_phrases_and_links_home() -> None:
@@ -278,7 +323,7 @@ def test_settings_page_edits_welcome_phrases_and_links_home() -> None:
     assert "欢迎词（每行一条）" in response.text
     assert "你好呀，欢迎回来。" in response.text
     assert 'href="/"' in response.text
-    assert "返回管理页" in response.text
+    assert 'href="/logs"' in response.text
 
 
 def test_disabled_rule_explains_why_video_stream_is_not_running() -> None:
@@ -414,7 +459,7 @@ def test_invalid_welcome_phrases_render_error_without_writing() -> None:
 
     assert response.status_code == 422
     assert "至少填写一条欢迎词" in response.text
-    assert "返回管理页" in response.text
+    assert 'href="/logs"' in response.text
     assert runtime.phrase_updates == []
 
 

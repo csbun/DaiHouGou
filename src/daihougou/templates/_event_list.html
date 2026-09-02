@@ -1,0 +1,26 @@
+<div class="event-list">
+  {% for event in snapshot.events %}
+  <article class="event-record">
+    <div class="event-summary">
+      <time datetime="{{ event.occurred_at }}">{{ event.occurred_at[:19].replace('T', ' ') }}</time>
+      <strong class="event-result event-result-{% if event.success %}success{% else %}incomplete{% endif %}">
+        {{ '成功' if event.success else '未完成' }}
+      </strong>
+    </div>
+    <dl class="event-fields">
+      <div><dt>摄像头</dt><dd>{{ event.camera_id or '—' }}</dd></div>
+      <div><dt>音箱</dt><dd>{{ event.speaker_id or '—' }}</dd></div>
+      <div><dt>事件</dt><dd>{{ event.kind }}</dd></div>
+      <div><dt>耗时</dt><dd>{{ event.latency_ms ~ ' ms' if event.latency_ms is not none else '—' }}</dd></div>
+      {% if event.spoken_text %}
+      <div class="event-field-wide"><dt>播报内容</dt><dd>{{ event.spoken_text }}</dd></div>
+      {% endif %}
+      {% if event.details_display %}
+      <div class="event-field-wide"><dt>详情</dt><dd class="event-details">{{ event.details_display }}</dd></div>
+      {% endif %}
+    </dl>
+  </article>
+  {% else %}
+  <p class="empty-state">暂无记录</p>
+  {% endfor %}
+</div>

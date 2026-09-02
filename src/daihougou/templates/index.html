@@ -7,21 +7,8 @@
     <link rel="stylesheet" href="{{ url_for('static', path='/app.css') }}">
     <script src="{{ url_for('static', path='/app.js') }}" defer></script>
   </head>
-  <body>
-    <header class="topbar">
-      <div class="brand">
-        <p>家庭儿童陪护</p>
-        <h1>大口九</h1>
-      </div>
-      <div class="topbar-actions">
-        <a class="topbar-link" href="/settings">设置</a>
-        <span class="overall status status-{{ snapshot.overall }}">
-          {% if snapshot.overall == 'ready' %}运行正常
-          {% elif snapshot.overall == 'unhealthy' %}运行异常
-          {% else %}需要检查{% endif %}
-        </span>
-      </div>
-    </header>
+  <body class="has-bottom-tabs">
+    {% include "_header.html" %}
 
     <main>
       <section aria-labelledby="status-title">
@@ -37,36 +24,6 @@
             <dd><span data-enabled-camera-count>{{ snapshot.enabled_camera_count }}</span> 已开启 / {{ snapshot.saved_camera_count }} 已保存</dd>
           </div>
         </dl>
-      </section>
-
-      <section aria-labelledby="events-title">
-        <h2 id="events-title">最近记录</h2>
-        <div class="event-list">
-          {% for event in snapshot.events %}
-          <article class="event-record">
-            <div class="event-summary">
-              <time datetime="{{ event.occurred_at }}">{{ event.occurred_at[:19].replace('T', ' ') }}</time>
-              <strong class="event-result event-result-{% if event.success %}success{% else %}incomplete{% endif %}">
-                {{ '成功' if event.success else '未完成' }}
-              </strong>
-            </div>
-            <dl class="event-fields">
-              <div><dt>摄像头</dt><dd>{{ event.camera_id or '—' }}</dd></div>
-              <div><dt>音箱</dt><dd>{{ event.speaker_id or '—' }}</dd></div>
-              <div><dt>事件</dt><dd>{{ event.kind }}</dd></div>
-              <div><dt>耗时</dt><dd>{{ event.latency_ms ~ ' ms' if event.latency_ms is not none else '—' }}</dd></div>
-              {% if event.spoken_text %}
-              <div class="event-field-wide"><dt>播报内容</dt><dd>{{ event.spoken_text }}</dd></div>
-              {% endif %}
-              {% if event.details_display %}
-              <div class="event-field-wide"><dt>详情</dt><dd class="event-details">{{ event.details_display }}</dd></div>
-              {% endif %}
-            </dl>
-          </article>
-          {% else %}
-          <p class="empty-state">暂无记录</p>
-          {% endfor %}
-        </div>
       </section>
 
       <section aria-labelledby="cameras-title">
@@ -187,5 +144,6 @@
         </div>
       </section>
     </main>
+    {% include "_bottom_tabs.html" %}
   </body>
 </html>

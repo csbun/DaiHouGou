@@ -101,6 +101,7 @@ def create_app(runtime: ManagedRuntime, csrf_token: str | None = None) -> FastAP
             context={
                 "snapshot": snapshot,
                 "csrf_token": token,
+                "active_tab": "status",
                 "supported_categories": tuple(SUPPORTED_CATEGORY_NAMES.items()),
                 "camera_region_urls": {
                     camera.stream_id: f"/camera-region?{urlencode({'camera_id': camera.stream_id})}"
@@ -182,6 +183,7 @@ def create_app(runtime: ManagedRuntime, csrf_token: str | None = None) -> FastAP
             request=request,
             name="settings.html",
             context={
+                "snapshot": runtime.snapshot(),
                 "phrases_text": (
                     phrases_text
                     if phrases_text is not None
@@ -189,6 +191,7 @@ def create_app(runtime: ManagedRuntime, csrf_token: str | None = None) -> FastAP
                 ),
                 "phrase_error": phrase_error,
                 "csrf_token": token,
+                "active_tab": "settings",
                 "supported_categories": tuple(SUPPORTED_CATEGORY_NAMES.items()),
             },
             status_code=status_code,
@@ -214,6 +217,19 @@ def create_app(runtime: ManagedRuntime, csrf_token: str | None = None) -> FastAP
     @app.get("/settings", response_class=HTMLResponse)
     async def settings(request: Request) -> HTMLResponse:
         return render_settings(request)
+
+    @app.get("/logs", response_class=HTMLResponse)
+    async def logs(request: Request) -> HTMLResponse:
+        response = templates.TemplateResponse(
+            request=request,
+            name="logs.html",
+            context={
+                "snapshot": runtime.snapshot(),
+                "csrf_token": token,
+                "active_tab": "logs",
+            },
+        )
+        return prepare_html(response)
 
     @app.get("/camera-region", response_class=HTMLResponse)
     async def camera_region(
