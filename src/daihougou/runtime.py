@@ -400,10 +400,19 @@ class Runtime:
         )
 
         for stream_id in sorted(self._camera_runtimes.keys() - desired.keys()):
-            await self._camera_runtimes.pop(stream_id).stop()
+            try:
+                await self._camera_runtimes[stream_id].stop()
+            except Exception:  # noqa: BLE001
+                self._camera_runtime_errors[stream_id] = "camera_start_failed"
+                continue
+            self._camera_runtimes.pop(stream_id, None)
             self._camera_descriptors.pop(stream_id, None)
             self._camera_runtime_errors.pop(stream_id, None)
-        for stream_id in self._camera_runtime_errors.keys() - desired.keys():
+        for stream_id in (
+            self._camera_runtime_errors.keys()
+            - desired.keys()
+            - self._camera_runtimes.keys()
+        ):
             self._camera_runtime_errors.pop(stream_id)
 
         needed = {

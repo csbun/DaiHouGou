@@ -527,7 +527,7 @@ def test_region_update_handles_internal_factory_type_error_once(
 def test_region_update_keeps_old_runtime_managed_when_stop_fails(tmp_path: Path) -> None:
     async def scenario() -> None:
         runtime, _discovery, sources, _scheduler, _source_calls = make_runtime(
-            tmp_path, discoveries=[("front",), ("front",)]
+            tmp_path, discoveries=[("front",), (), ("front",)]
         )
         await runtime.start()
         await runtime.set_rule_enabled("front", True)
@@ -548,6 +548,9 @@ def test_region_update_keeps_old_runtime_managed_when_stop_fails(tmp_path: Path)
         assert camera.detection_region == region
         assert camera.stream == "degraded"
         assert camera.last_error == "camera_start_failed"
+        assert runtime._camera_runtimes["front"] is old_runtime
+
+        await runtime.refresh_cameras()
         assert runtime._camera_runtimes["front"] is old_runtime
 
         old_source.stop = original_stop  # type: ignore[method-assign]
