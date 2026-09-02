@@ -17,6 +17,16 @@ _SCHEMA_TABLES = frozenset({"camera_rules", "cameras", "events", "rule_configs"}
 _CAMERA_COLUMNS = frozenset(
     {"stream_id", "speaker_id", "first_seen_at", "last_seen_at", "region_x", "region_y", "region_width", "region_height"}
 )
+_V2_TABLE_DEFINITIONS = {
+    "cameras": "CREATE TABLE cameras ( stream_id TEXT PRIMARY KEY, speaker_id TEXT NOT NULL, first_seen_at TEXT NOT NULL, last_seen_at TEXT NOT NULL )",
+    "camera_rules": "CREATE TABLE camera_rules ( camera_id TEXT NOT NULL REFERENCES cameras(stream_id), rule_id TEXT NOT NULL, enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)), updated_at TEXT NOT NULL, PRIMARY KEY (camera_id, rule_id) )",
+    "rule_configs": "CREATE TABLE rule_configs ( rule_id TEXT PRIMARY KEY, config_json TEXT NOT NULL, updated_at TEXT NOT NULL )",
+    "events": "CREATE TABLE events ( id INTEGER PRIMARY KEY AUTOINCREMENT, occurred_at TEXT NOT NULL, kind TEXT NOT NULL, rule_id TEXT, camera_id TEXT, speaker_id TEXT, success INTEGER NOT NULL CHECK (success IN (0, 1)), latency_ms INTEGER, details_json TEXT NOT NULL )",
+}
+_V3_TABLE_DEFINITIONS = {
+    **_V2_TABLE_DEFINITIONS,
+    "cameras": "CREATE TABLE cameras ( stream_id TEXT PRIMARY KEY, speaker_id TEXT NOT NULL, first_seen_at TEXT NOT NULL, last_seen_at TEXT NOT NULL, region_x REAL NOT NULL DEFAULT 0, region_y REAL NOT NULL DEFAULT 0, region_width REAL NOT NULL DEFAULT 1, region_height REAL NOT NULL DEFAULT 1 )",
+}
 _LEGACY_WELCOME_PHRASES = (
     "你好呀，欢迎回来。",
     "嗨，很高兴见到你。",
@@ -158,37 +168,34 @@ class Storage:
                     """
                 )
             elif schema_version == 2 and table_names == _SCHEMA_TABLES:
-                columns = {
-                    str(row["name"])
-                    for row in connection.execute("PRAGMA table_info(cameras)")
-                }
-                if columns != {"stream_id", "speaker_id", "first_seen_at", "last_seen_at"}:
+                if not self._schema_matches(connection, _V2_TABLE_DEFINITIONS):
                     raise IncompatibleSchemaError(
                         "incompatible database; reset the database using the runbook"
                     )
-                connection.execute(
-                    "ALTER TABLE cameras ADD COLUMN region_x REAL NOT NULL DEFAULT 0"
-                )
-                connection.execute(
-                    "ALTER TABLE cameras ADD COLUMN region_y REAL NOT NULL DEFAULT 0"
-                )
-                connection.execute(
-                    "ALTER TABLE cameras ADD COLUMN region_width REAL NOT NULL DEFAULT 1"
-                )
-                connection.execute(
-                    "ALTER TABLE cameras ADD COLUMN region_height REAL NOT NULL DEFAULT 1"
-                )
-                connection.execute("PRAGMA user_version = 3")
+                connection.execute("BEGIN")
+                try:
+                    connection.execute(
+                        "ALTER TABLE cameras ADD COLUMN region_x REAL NOT NULL DEFAULT 0"
+                    )
+                    connection.execute(
+                        "ALTER TABLE cameras ADD COLUMN region_y REAL NOT NULL DEFAULT 0"
+                    )
+                    connection.execute(
+                        "ALTER TABLE cameras ADD COLUMN region_width REAL NOT NULL DEFAULT 1"
+                    )
+                    connection.execute(
+                        "ALTER TABLE cameras ADD COLUMN region_height REAL NOT NULL DEFAULT 1"
+                    )
+                    connection.execute("PRAGMA user_version = 3")
+                except Exception:
+                    connection.rollback()
+                    raise
             elif schema_version != SCHEMA_VERSION or table_names != _SCHEMA_TABLES:
                 raise IncompatibleSchemaError(
                     "incompatible database; reset the database using the runbook"
                 )
             else:
-                columns = {
-                    str(row["name"])
-                    for row in connection.execute("PRAGMA table_info(cameras)")
-                }
-                if columns != _CAMERA_COLUMNS:
+                if not self._schema_matches(connection, _V3_TABLE_DEFINITIONS):
                     raise IncompatibleSchemaError(
                         "incompatible database; reset the database using the runbook"
                     )
@@ -396,6 +403,22 @@ class Storage:
     def journal_mode(self) -> str:
         with self._connect() as connection:
             return str(connection.execute("PRAGMA journal_mode").fetchone()[0])
+
+    @staticmethod
+    def _schema_matches(
+        connection: sqlite3.Connection, expected: dict[str, str]
+    ) -> bool:
+        rows = connection.execute(
+            "SELECT name, sql FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+        ).fetchall()
+        actual = {
+            str(row["name"]): "".join(str(row["sql"]).lower().split())
+            for row in rows
+        }
+        normalized_expected = {
+            name: "".join(sql.lower().split()) for name, sql in expected.items()
+        }
+        return actual == normalized_expected
 
     @staticmethod
     def _now() -> str:

@@ -73,3 +73,21 @@ git diff --check
 ## Concerns
 
 - The repository environment lacks pytest, so the requested pytest suite and complete suite could not be executed. No dependencies were installed.
+
+## Round 1 Fix
+
+- Wrapped all four v2 migration `ALTER TABLE` statements and `PRAGMA user_version = 3` in an explicit transaction with rollback on any exception.
+- Added exact normalized `sqlite_master` definition checks for `cameras`, `camera_rules`, `rule_configs`, and `events` in both v2 and v3 validation paths.
+- Added regression coverage for malformed non-camera v2 schemas; such databases are rejected before region columns are added.
+
+Verification after fix:
+
+```text
+PYTHONPATH=src /opt/homebrew/bin/python3.12 <v2 migration smoke check>
+migration smoke passed
+
+/opt/homebrew/bin/python3.12 -m compileall -q src tests
+git diff --check
+```
+
+`pytest` remains unavailable in the repository environment (`No module named pytest`); no dependencies were installed.

@@ -231,6 +231,27 @@ def test_initialize_rejects_malformed_v2_tables_without_adding_region_columns(
     assert "region_x" not in columns
 
 
+def test_initialize_rejects_malformed_non_camera_v2_table_without_migration(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "app.db"
+    create_v2_database(path)
+    with sqlite3.connect(path) as connection:
+        connection.execute("ALTER TABLE events RENAME TO events_backup")
+        connection.execute(
+            "CREATE TABLE events (id INTEGER PRIMARY KEY, kind TEXT NOT NULL)"
+        )
+        connection.execute("PRAGMA user_version = 2")
+
+    with pytest.raises(IncompatibleSchemaError, match="reset the database"):
+        Storage(path).initialize()
+
+    with sqlite3.connect(path) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 2
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(cameras)")}
+    assert "region_x" not in columns
+
+
 def test_welcome_phrases_normalize_and_reject_invalid_update(tmp_path: Path) -> None:
     storage = Storage(tmp_path / "app.db")
     storage.initialize()
