@@ -3,6 +3,7 @@ import os
 import uvicorn
 from fastapi import FastAPI
 
+from daihougou.detection_region import DetectionRegion
 from daihougou.detection_scheduler import DetectionScheduler
 from daihougou.go2rtc import Go2RtcClient
 from daihougou.runtime import Runtime
@@ -35,9 +36,13 @@ def create_production_app(settings: Settings | None = None) -> FastAPI:
         lambda: ObjectDetector(resolved.object_model),
     )
 
-    def frame_source_factory(url: str, size: int):
+    def frame_source_factory(
+        url: str, size: int, region: DetectionRegion
+    ) -> FfmpegFrameSource:
         try:
-            return FfmpegFrameSource(url, resolved.detection_fps, size=size)
+            return FfmpegFrameSource(
+                url, resolved.detection_fps, size=size, region=region
+            )
         except TypeError:
             return FfmpegFrameSource(url, resolved.detection_fps)
 

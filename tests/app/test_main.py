@@ -52,6 +52,7 @@ def test_production_lifespan_discovers_once_and_loads_visual_stack_on_enable(
     tmp_path: Path, monkeypatch
 ) -> None:
     calls = {"discovery": 0, "detector": 0, "source": 0}
+    source_arguments: list[tuple[str, float]] = []
 
     class FakeDiscovery:
         def __init__(self, base_url: str) -> None:
@@ -81,6 +82,7 @@ def test_production_lifespan_discovers_once_and_loads_visual_stack_on_enable(
 
     def source_factory(url: str, fps: float) -> FakeSource:
         assert url == "rtsp://127.0.0.1:8554/front"
+        source_arguments.append((url, fps))
         calls["source"] += 1
         return FakeSource()
 
@@ -113,3 +115,4 @@ def test_production_lifespan_discovers_once_and_loads_visual_stack_on_enable(
 
         assert response.status_code == 303
         assert calls == {"discovery": 1, "detector": 1, "source": 1}
+        assert source_arguments == [("rtsp://127.0.0.1:8554/front", 1.0)]

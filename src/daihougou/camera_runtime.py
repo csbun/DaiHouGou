@@ -86,6 +86,7 @@ class CameraRuntime:
         object_rule: ObjectCategoryAnnouncementRule | None = None,
         scene_gate: SceneChangeGate | None = None,
         clock: Callable[[], float] = time.monotonic,
+        suppress_initial_object_detection: bool = False,
     ) -> None:
         self._stream_id = stream_id
         self._frame_source = frame_source
@@ -112,6 +113,7 @@ class CameraRuntime:
             "starting" if object_rule else "stopped", None, None, ""
         )
         self._object_failed = False
+        self._suppress_initial_object_detection = suppress_initial_object_detection
 
     async def start(self) -> None:
         if self._task is not None:
@@ -213,19 +215,19 @@ class CameraRuntime:
                     ),
                 )
             )
-        if (
-            self._object_rule is not None
-            and not self._object_failed
-            and self._scene_gate.changed(sample.frame)
-        ):
-            jobs.append(
-                (
-                    "object",
-                    asyncio.create_task(
-                        self._detect_objects(sample), name=f"object-{self._stream_id}"
-                    ),
+        if self._object_rule is not None and not self._object_failed:
+            scene_changed = self._scene_gate.changed(sample.frame)
+            if self._suppress_initial_object_detection:
+                self._suppress_initial_object_detection = False
+            elif scene_changed:
+                jobs.append(
+                    (
+                        "object",
+                        asyncio.create_task(
+                            self._detect_objects(sample), name=f"object-{self._stream_id}"
+                        ),
+                    )
                 )
-            )
         if not jobs:
             return
         results = await asyncio.gather(*(future for _, future in jobs), return_exceptions=True)

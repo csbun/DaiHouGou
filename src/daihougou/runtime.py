@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from daihougou.camera_runtime import CameraRuntime, FrameSource
+from daihougou.detection_region import DetectionRegion, FULL_FRAME_REGION
 from daihougou.detection_scheduler import DetectionScheduler, DetectorKind, DetectorSnapshot
 from daihougou.go2rtc import DiscoveryError, Go2RtcClient, rtsp_stream_url
 from daihougou.object_rule import ObjectCategoryAnnouncementRule
@@ -23,7 +24,7 @@ from daihougou.speaker_worker import SpeakerManager
 from daihougou.storage import CameraConfig, Storage, StoredEvent
 from daihougou.vision.frame_source import OBJECT_FRAME_SIZE, PERSON_FRAME_SIZE
 
-FrameSourceFactory = Callable[..., FrameSource]
+FrameSourceFactory = Callable[[str, int, DetectionRegion], FrameSource]
 
 
 class Discovery(Protocol):
@@ -92,6 +93,7 @@ class CameraView:
     last_confidence: float | None = None
     last_detection_latency_ms: int | None = None
     latest_trigger: StoredEvent | None = None
+    detection_region: DetectionRegion = FULL_FRAME_REGION
 
     def __post_init__(self) -> None:
         if self.rule_enabled is None:
@@ -232,7 +234,10 @@ class Runtime:
         self._welcome_cooldown_seconds = welcome_cooldown_seconds
         self._available_stream_ids: frozenset[str] | None = None
         self._camera_runtimes: dict[str, CameraRuntime] = {}
-        self._camera_descriptors: dict[str, tuple[frozenset[str], int]] = {}
+        self._camera_descriptors: dict[
+            str, tuple[frozenset[str], int, DetectionRegion]
+        ] = {}
+        self._camera_runtime_errors: dict[str, str] = {}
         self._app_status = "stopped"
         self._database_status = "starting"
         self._discovery_status = "unknown"
@@ -260,6 +265,7 @@ class Runtime:
                 camera = self._camera_runtimes.pop(stream_id)
                 await camera.stop()
             self._camera_descriptors.clear()
+            self._camera_runtime_errors.clear()
             close = getattr(self._scheduler, "close", None)
             if close is not None:
                 await close()
@@ -302,6 +308,27 @@ class Runtime:
         async with self._lock:
             self._storage.set_camera_speaker(camera_id, speaker_id)
 
+    async def set_camera_detection_region(
+        self, camera_id: str, region: DetectionRegion
+    ) -> None:
+        async with self._lock:
+            current = next(
+                (
+                    item
+                    for item in self._storage.list_cameras()
+                    if item.stream_id == camera_id
+                ),
+                None,
+            )
+            if current is None:
+                raise KeyError(camera_id)
+            if current.detection_region == region:
+                return
+            self._storage.set_camera_detection_region(camera_id, region)
+            await self._reconcile(
+                suppress_initial_object_for=frozenset({camera_id})
+            )
+
     def welcome_phrases(self) -> tuple[str, ...]:
         return self._storage.welcome_phrases()
 
@@ -329,7 +356,9 @@ class Runtime:
             detectors=detectors,
         )
 
-    async def _reconcile(self) -> None:
+    async def _reconcile(
+        self, suppress_initial_object_for: frozenset[str] = frozenset()
+    ) -> None:
         configs = self._storage.list_cameras()
         enabled_by_camera = {
             config.stream_id: frozenset(
@@ -354,6 +383,9 @@ class Runtime:
         for stream_id in sorted(self._camera_runtimes.keys() - desired.keys()):
             await self._camera_runtimes.pop(stream_id).stop()
             self._camera_descriptors.pop(stream_id, None)
+            self._camera_runtime_errors.pop(stream_id, None)
+        for stream_id in self._camera_runtime_errors.keys() - desired.keys():
+            self._camera_runtime_errors.pop(stream_id)
 
         needed = {
             kind
@@ -372,36 +404,66 @@ class Runtime:
 
         for stream_id, rule_ids in sorted(desired.items()):
             size = OBJECT_FRAME_SIZE if OBJECT_RULE_ID in rule_ids else PERSON_FRAME_SIZE
-            descriptor = (rule_ids, size)
+            config = next(config for config in configs if config.stream_id == stream_id)
+            descriptor = (rule_ids, size, config.detection_region)
             if self._camera_descriptors.get(stream_id) == descriptor:
                 continue
             old = self._camera_runtimes.pop(stream_id, None)
             if old is not None:
                 await old.stop()
-            source = self._make_source(rtsp_stream_url(self._rtsp_base_url, stream_id), size)
-            camera = CameraRuntime(
-                stream_id,
-                source,
-                self._scheduler,
-                PresenceTracker(leave_seconds=self._leave_seconds),
-                WelcomeRule(stream_id, self._storage, cooldown_seconds=self._welcome_cooldown_seconds)
-                if WELCOME_RULE_ID in rule_ids
-                else None,
-                self._speaker_manager,
-                self._storage,
-                object_rule=ObjectCategoryAnnouncementRule(stream_id, self._storage)
-                if OBJECT_RULE_ID in rule_ids
-                else None,
-            )
-            self._camera_runtimes[stream_id] = camera
+            camera: CameraRuntime | None = None
+            try:
+                source = self._make_source(
+                    rtsp_stream_url(self._rtsp_base_url, stream_id),
+                    size,
+                    config.detection_region,
+                )
+                camera = CameraRuntime(
+                    stream_id,
+                    source,
+                    self._scheduler,
+                    PresenceTracker(leave_seconds=self._leave_seconds),
+                    WelcomeRule(
+                        stream_id,
+                        self._storage,
+                        cooldown_seconds=self._welcome_cooldown_seconds,
+                    )
+                    if WELCOME_RULE_ID in rule_ids
+                    else None,
+                    self._speaker_manager,
+                    self._storage,
+                    object_rule=ObjectCategoryAnnouncementRule(stream_id, self._storage)
+                    if OBJECT_RULE_ID in rule_ids
+                    else None,
+                    suppress_initial_object_detection=(
+                        stream_id in suppress_initial_object_for
+                    ),
+                )
+                self._camera_runtimes[stream_id] = camera
+                await camera.start()
+            except Exception:  # noqa: BLE001
+                self._camera_runtimes.pop(stream_id, None)
+                self._camera_descriptors.pop(stream_id, None)
+                if camera is not None:
+                    try:
+                        await camera.stop()
+                    except Exception:  # noqa: BLE001
+                        pass
+                self._camera_runtime_errors[stream_id] = "camera_start_failed"
+                continue
             self._camera_descriptors[stream_id] = descriptor
-            await camera.start()
+            self._camera_runtime_errors.pop(stream_id, None)
 
-    def _make_source(self, url: str, size: int) -> FrameSource:
+    def _make_source(
+        self, url: str, size: int, region: DetectionRegion
+    ) -> FrameSource:
         try:
-            return self._frame_source_factory(url, size)
+            return self._frame_source_factory(url, size, region)
         except TypeError:
-            return self._frame_source_factory(url)
+            try:
+                return self._frame_source_factory(url, size)
+            except TypeError:
+                return self._frame_source_factory(url)
 
     async def _enable_detector(self, kind: DetectorKind) -> None:
         enable = getattr(self._scheduler, "enable", None)
@@ -445,15 +507,26 @@ class Runtime:
             last_error = state.last_error
         else:
             unavailable = bool(enabled_ids) and available is False
+            runtime_error = self._camera_runtime_errors.get(config.stream_id, "")
             from daihougou.camera_runtime import PipelineSnapshot
 
             pipeline = {
-                WELCOME_RULE_ID: PipelineSnapshot("degraded" if unavailable else "stopped", None, None, "stream_unavailable" if unavailable else ""),
-                OBJECT_RULE_ID: PipelineSnapshot("degraded" if unavailable else "stopped", None, None, "stream_unavailable" if unavailable else ""),
+                WELCOME_RULE_ID: PipelineSnapshot(
+                    "degraded" if unavailable or runtime_error else "stopped",
+                    None,
+                    None,
+                    runtime_error or ("stream_unavailable" if unavailable else ""),
+                ),
+                OBJECT_RULE_ID: PipelineSnapshot(
+                    "degraded" if unavailable or runtime_error else "stopped",
+                    None,
+                    None,
+                    runtime_error or ("stream_unavailable" if unavailable else ""),
+                ),
             }
-            stream = "degraded" if unavailable else "stopped"
+            stream = "degraded" if unavailable or runtime_error else "stopped"
             presence = "unknown"
-            last_error = "stream_unavailable" if unavailable else ""
+            last_error = runtime_error or ("stream_unavailable" if unavailable else "")
         rules = tuple(
             RuleView(
                 rule_id,
@@ -495,4 +568,5 @@ class Runtime:
             stream,
             presence,
             last_error,
+            detection_region=config.detection_region,
         )

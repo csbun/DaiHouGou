@@ -5,6 +5,7 @@ from pathlib import Path
 from urllib.parse import unquote
 
 from daihougou.go2rtc import DiscoveryError
+from daihougou.detection_region import DetectionRegion, FULL_FRAME_REGION
 from daihougou.rules import WELCOME_RULE_ID, SpeechAction
 from daihougou.runtime import Runtime
 from daihougou.settings import SpeakerConfig
@@ -97,21 +98,29 @@ def make_runtime(
     *,
     broken_streams: frozenset[str] = frozenset(),
     speaker_manager: FakeSpeakerManager | None = None,
-) -> tuple[Runtime, FakeDiscovery, dict[str, FakeSource], FakeDetectionScheduler]:
+) -> tuple[
+    Runtime,
+    FakeDiscovery,
+    dict[str, FakeSource],
+    FakeDetectionScheduler,
+    list[tuple[str, int, DetectionRegion]],
+]:
     storage = Storage(tmp_path / "app.db")
     discovery = FakeDiscovery(discoveries)
     sources: dict[str, FakeSource] = {}
+    source_calls: list[tuple[str, int, DetectionRegion]] = []
     scheduler = FakeDetectionScheduler()
     speakers = (
         SpeakerConfig("living_room", "客厅音箱", "secret-living-did"),
         SpeakerConfig("bedroom", "卧室音箱", "secret-bedroom-did"),
     )
 
-    def source_factory(url: str) -> FakeSource:
+    def source_factory(url: str, size: int, region: DetectionRegion) -> FakeSource:
         stream_id = unquote(url.rsplit("/", 1)[-1])
-        return sources.setdefault(
-            stream_id, FakeSource(broken=stream_id in broken_streams)
-        )
+        source_calls.append((stream_id, size, region))
+        source = FakeSource(broken=stream_id in broken_streams)
+        sources[stream_id] = source
+        return source
 
     runtime = Runtime(
         storage=storage,
@@ -124,12 +133,12 @@ def make_runtime(
         leave_seconds=10,
         welcome_cooldown_seconds=60,
     )
-    return runtime, discovery, sources, scheduler
+    return runtime, discovery, sources, scheduler, source_calls
 
 
 def test_start_discovers_once_and_new_cameras_stay_idle(tmp_path: Path) -> None:
     async def scenario() -> None:
-        runtime, discovery, sources, scheduler = make_runtime(
+        runtime, discovery, sources, scheduler, _source_calls = make_runtime(
             tmp_path, discoveries=[("front", "back")]
         )
         await runtime.start()
@@ -153,7 +162,7 @@ def test_enable_starts_only_target_and_last_disable_releases_detector(
     tmp_path: Path,
 ) -> None:
     async def scenario() -> None:
-        runtime, _discovery, sources, scheduler = make_runtime(
+        runtime, _discovery, sources, scheduler, _source_calls = make_runtime(
             tmp_path, discoveries=[("front", "back")]
         )
         await runtime.start()
@@ -176,7 +185,7 @@ def test_refresh_is_manual_and_missing_stream_keeps_configuration(
     tmp_path: Path,
 ) -> None:
     async def scenario() -> None:
-        runtime, discovery, sources, _scheduler = make_runtime(
+        runtime, discovery, sources, _scheduler, _source_calls = make_runtime(
             tmp_path, discoveries=[("front", "back"), ("back",)]
         )
         await runtime.start()
@@ -203,7 +212,7 @@ def test_initial_discovery_failure_starts_saved_enabled_camera(tmp_path: Path) -
     storage.set_camera_rule_enabled("front", WELCOME_RULE_ID, True)
 
     async def scenario() -> None:
-        runtime, discovery, sources, scheduler = make_runtime(
+        runtime, discovery, sources, scheduler, _source_calls = make_runtime(
             tmp_path, discoveries=[DiscoveryError("go2rtc_unavailable")]
         )
         await runtime.start()
@@ -225,7 +234,7 @@ def test_later_refresh_failure_preserves_availability_and_running_set(
     tmp_path: Path,
 ) -> None:
     async def scenario() -> None:
-        runtime, _discovery, sources, scheduler = make_runtime(
+        runtime, _discovery, sources, scheduler, _source_calls = make_runtime(
             tmp_path,
             discoveries=[("front",), DiscoveryError("go2rtc_unavailable")],
         )
@@ -245,14 +254,15 @@ def test_later_refresh_failure_preserves_availability_and_running_set(
 
 def test_removed_stream_reappears_with_rule_and_pairing_preserved(tmp_path: Path) -> None:
     async def scenario() -> None:
-        runtime, _discovery, sources, _scheduler = make_runtime(
+        runtime, _discovery, sources, _scheduler, _source_calls = make_runtime(
             tmp_path, discoveries=[("front",), (), ("front",)]
         )
         await runtime.start()
         await runtime.set_camera_speaker("front", "bedroom")
         await runtime.set_rule_enabled("front", True)
+        original_source = sources["front"]
         await runtime.refresh_cameras()
-        assert sources["front"].stop_count == 1
+        assert original_source.stop_count == 1
         await runtime.refresh_cameras()
         snapshot = runtime.snapshot()
         front = snapshot.cameras[0]
@@ -260,7 +270,8 @@ def test_removed_stream_reappears_with_rule_and_pairing_preserved(tmp_path: Path
         assert front.available is True
         assert front.rule_enabled is True
         assert front.speaker_id == "bedroom"
-        assert sources["front"].start_count == 2
+        assert sources["front"] is not original_source
+        assert sources["front"].start_count == 1
         await runtime.stop()
 
     asyncio.run(scenario())
@@ -268,7 +279,7 @@ def test_removed_stream_reappears_with_rule_and_pairing_preserved(tmp_path: Path
 
 def test_unknown_speaker_update_does_not_change_storage(tmp_path: Path) -> None:
     async def scenario() -> None:
-        runtime, _discovery, _sources, _scheduler = make_runtime(
+        runtime, _discovery, _sources, _scheduler, _source_calls = make_runtime(
             tmp_path, discoveries=[("front",)]
         )
         await runtime.start()
@@ -288,7 +299,7 @@ def test_unknown_speaker_update_does_not_change_storage(tmp_path: Path) -> None:
 def test_four_enabled_cameras_warn_but_are_not_blocked(tmp_path: Path) -> None:
     async def scenario() -> None:
         camera_ids = ("one", "two", "three", "four")
-        runtime, _discovery, sources, _scheduler = make_runtime(
+        runtime, _discovery, sources, _scheduler, _source_calls = make_runtime(
             tmp_path, discoveries=[camera_ids]
         )
         await runtime.start()
@@ -310,7 +321,7 @@ def test_one_camera_background_failure_does_not_mark_other_camera_degraded(
     tmp_path: Path,
 ) -> None:
     async def scenario() -> None:
-        runtime, _discovery, _sources, _scheduler = make_runtime(
+        runtime, _discovery, _sources, _scheduler, _source_calls = make_runtime(
             tmp_path,
             discoveries=[("front", "back")],
             broken_streams=frozenset({"front"}),
@@ -331,7 +342,7 @@ def test_one_camera_background_failure_does_not_mark_other_camera_degraded(
 def test_shared_scheduler_or_speaker_failure_is_unhealthy(tmp_path: Path) -> None:
     async def scenario() -> None:
         manager = FakeSpeakerManager(Storage(tmp_path / "app.db"))
-        runtime, _discovery, _sources, scheduler = make_runtime(
+        runtime, _discovery, _sources, scheduler, _source_calls = make_runtime(
             tmp_path, discoveries=[("front",)], speaker_manager=manager
         )
         await runtime.start()
@@ -347,7 +358,7 @@ def test_shared_scheduler_or_speaker_failure_is_unhealthy(tmp_path: Path) -> Non
 
 def test_latest_trigger_is_scoped_to_each_camera(tmp_path: Path) -> None:
     async def scenario() -> None:
-        runtime, _discovery, _sources, _scheduler = make_runtime(
+        runtime, _discovery, _sources, _scheduler, _source_calls = make_runtime(
             tmp_path, discoveries=[("front", "back")]
         )
         await runtime.start()
@@ -374,6 +385,132 @@ def test_latest_trigger_is_scoped_to_each_camera(tmp_path: Path) -> None:
 
         assert cameras["front"].latest_trigger.kind == "speaker_completed"
         assert cameras["back"].latest_trigger.kind == "speaker_queue_full"
+        await runtime.stop()
+
+    asyncio.run(scenario())
+
+
+def test_region_update_restarts_only_its_camera_and_keeps_event_history(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        runtime, _discovery, sources, _scheduler, source_calls = make_runtime(
+            tmp_path, discoveries=[("front", "back")]
+        )
+        await runtime.start()
+        await runtime.set_rule_enabled("front", True)
+        await runtime.set_rule_enabled("back", True)
+        old_front = sources["front"]
+        old_back = sources["back"]
+        event_count = len(runtime.snapshot().events)
+        region = DetectionRegion(0.1, 0.2, 0.6, 0.5)
+
+        await runtime.set_camera_detection_region("front", region)
+
+        assert old_front.stopped is True
+        assert sources["back"] is old_back
+        assert old_back.stop_count == 0
+        assert source_calls[-1] == ("front", 256, region)
+        assert runtime.snapshot().cameras[0].detection_region == region
+        assert len(runtime.snapshot().events) == event_count
+        await runtime.stop()
+
+    asyncio.run(scenario())
+
+
+def test_identical_region_update_does_not_restart_camera(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        runtime, _discovery, sources, _scheduler, source_calls = make_runtime(
+            tmp_path, discoveries=[("front",)]
+        )
+        await runtime.start()
+        await runtime.set_rule_enabled("front", True)
+        source = sources["front"]
+
+        await runtime.set_camera_detection_region("front", FULL_FRAME_REGION)
+
+        assert sources["front"] is source
+        assert source.stop_count == 0
+        assert len(source_calls) == 1
+        await runtime.stop()
+
+    asyncio.run(scenario())
+
+
+def test_disabled_camera_region_update_creates_no_source(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        runtime, _discovery, sources, _scheduler, source_calls = make_runtime(
+            tmp_path, discoveries=[("front",)]
+        )
+        await runtime.start()
+
+        await runtime.set_camera_detection_region(
+            "front", DetectionRegion(0.1, 0.1, 0.8, 0.8)
+        )
+
+        assert sources == {}
+        assert source_calls == []
+        assert runtime.snapshot().cameras[0].detection_region == DetectionRegion(
+            0.1, 0.1, 0.8, 0.8
+        )
+        await runtime.stop()
+
+    asyncio.run(scenario())
+
+
+def test_region_update_persists_and_degrades_only_camera_when_source_start_fails(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        runtime, _discovery, sources, _scheduler, _source_calls = make_runtime(
+            tmp_path, discoveries=[("front", "back")]
+        )
+        await runtime.start()
+        await runtime.set_rule_enabled("front", True)
+        await runtime.set_rule_enabled("back", True)
+        old_back = sources["back"]
+
+        def failing_factory(url: str, size: int, region: DetectionRegion) -> FakeSource:
+            if url.endswith("/front"):
+                raise RuntimeError("source unavailable")
+            return FakeSource()
+
+        runtime._frame_source_factory = failing_factory
+        region = DetectionRegion(0.1, 0.2, 0.6, 0.5)
+        await runtime.set_camera_detection_region("front", region)
+        cameras = {camera.stream_id: camera for camera in runtime.snapshot().cameras}
+
+        assert cameras["front"].detection_region == region
+        assert cameras["front"].stream == "degraded"
+        assert cameras["front"].last_error == "camera_start_failed"
+        assert all(
+            rule.last_error == "camera_start_failed"
+            for rule in cameras["front"].rules
+            if rule.enabled
+        )
+        assert sources["back"] is old_back
+        assert old_back.stop_count == 0
+        await runtime.stop()
+
+    asyncio.run(scenario())
+
+
+def test_unknown_camera_region_update_raises_without_creating_source(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        runtime, _discovery, sources, _scheduler, source_calls = make_runtime(
+            tmp_path, discoveries=[("front",)]
+        )
+        await runtime.start()
+
+        try:
+            await runtime.set_camera_detection_region(
+                "missing", DetectionRegion(0.1, 0.1, 0.8, 0.8)
+            )
+        except KeyError as error:
+            assert error.args == ("missing",)
+        else:
+            raise AssertionError("unknown camera was accepted")
+
+        assert sources == {}
+        assert source_calls == []
         await runtime.stop()
 
     asyncio.run(scenario())

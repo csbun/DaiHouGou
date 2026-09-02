@@ -6,10 +6,12 @@ from pathlib import Path
 import numpy as np
 
 from daihougou.camera_runtime import CameraRuntime
+from daihougou.object_rule import ObjectCategoryAnnouncementRule
 from daihougou.presence import PresenceTracker
 from daihougou.rules import WELCOME_RULE_ID, SpeechAction, WelcomeRule
 from daihougou.storage import Storage
 from daihougou.vision.frame_source import FrameSample
+from daihougou.vision.object_detector import ObjectDetection
 from daihougou.vision.person_detector import PersonDetection
 
 
@@ -107,6 +109,95 @@ def test_camera_runtime_processes_entry_and_tags_events(tmp_path: Path) -> None:
             for event in storage.recent_events()
             if event.kind == "presence_changed"
         )
+
+    asyncio.run(scenario())
+
+
+def test_suppressed_initial_object_detection_seeds_scene_gate_without_skipping_persons(
+    tmp_path: Path,
+) -> None:
+    class ObjectCapableScheduler:
+        def __init__(self) -> None:
+            self.person_samples: list[int] = []
+            self.object_samples: list[int] = []
+
+        async def detect_person(
+            self, camera_id: str, sample: FrameSample
+        ) -> PersonDetection:
+            self.person_samples.append(sample.sequence)
+            return PersonDetection(False, 0.1, 1)
+
+        async def detect_objects(
+            self, camera_id: str, sample: FrameSample
+        ) -> ObjectDetection:
+            self.object_samples.append(sample.sequence)
+            return ObjectDetection((), 1)
+
+    class ChangedFrameSource(FakeFrameSource):
+        def __init__(self) -> None:
+            first = np.zeros((256, 256, 3), dtype=np.uint8)
+            second = np.full((256, 256, 3), 255, dtype=np.uint8)
+            self.samples = deque(
+                [FrameSample(1, 0, first), FrameSample(2, 1, second)]
+            )
+            self.started = False
+            self.stopped = False
+
+    async def scenario() -> None:
+        storage = configured_storage(tmp_path, "front", "living_room", enabled=True)
+        scheduler = ObjectCapableScheduler()
+        camera = CameraRuntime(
+            "front",
+            ChangedFrameSource(),
+            scheduler,
+            PresenceTracker(),
+            WelcomeRule("front", storage),
+            FakeSpeakerManager(),
+            storage,
+            object_rule=ObjectCategoryAnnouncementRule("front", storage),
+            suppress_initial_object_detection=True,
+        )
+
+        await camera.start()
+        await wait_for_sequence(camera, 2)
+        await camera.stop()
+
+        assert scheduler.person_samples == [1, 2]
+        assert scheduler.object_samples == [2]
+
+    asyncio.run(scenario())
+
+
+def test_default_camera_runtime_detects_objects_on_its_first_frame(tmp_path: Path) -> None:
+    class ObjectOnlyScheduler:
+        def __init__(self) -> None:
+            self.object_samples: list[int] = []
+
+        async def detect_objects(
+            self, camera_id: str, sample: FrameSample
+        ) -> ObjectDetection:
+            self.object_samples.append(sample.sequence)
+            return ObjectDetection((), 1)
+
+    async def scenario() -> None:
+        storage = configured_storage(tmp_path, "front", "living_room", enabled=False)
+        scheduler = ObjectOnlyScheduler()
+        camera = CameraRuntime(
+            "front",
+            FakeFrameSource([0]),
+            scheduler,
+            PresenceTracker(),
+            None,
+            FakeSpeakerManager(),
+            storage,
+            object_rule=ObjectCategoryAnnouncementRule("front", storage),
+        )
+
+        await camera.start()
+        await wait_for_sequence(camera, 1)
+        await camera.stop()
+
+        assert scheduler.object_samples == [1]
 
     asyncio.run(scenario())
 
