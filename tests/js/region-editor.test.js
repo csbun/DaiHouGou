@@ -4,11 +4,18 @@ const assert = require("node:assert/strict");
 const {
   FULL_FRAME_REGION,
   normalizeRegion,
+  parsePercentage,
   validateRegion,
   drawRegion,
   moveRegion,
   resizeRegion,
 } = require("../../src/daihougou/static/region-editor.js");
+
+test("percentage parsing rejects an empty field instead of treating it as zero", () => {
+  assert.equal(Number.isNaN(parsePercentage("")), true);
+  assert.equal(Number.isNaN(parsePercentage("  ")), true);
+  assert.equal(parsePercentage("12.5"), 0.125);
+});
 
 test("draw clamps to the image and enforces two percent", () => {
   assert.deepEqual(drawRegion({ x: 0.9, y: 0.95 }, { x: 1.2, y: 1.1 }), {

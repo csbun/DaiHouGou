@@ -30,6 +30,11 @@
     };
   }
 
+  function parsePercentage(value) {
+    const text = String(value).trim();
+    return text === "" ? Number.NaN : Number(text) / 100;
+  }
+
   function validateRegion(region) {
     const normalized = normalizeRegion(region);
     const values = Object.values(normalized);
@@ -263,7 +268,7 @@
 
     for (const [field, input] of Object.entries(visibleInputs)) {
       input.addEventListener("input", () => {
-        fieldDraft[field] = Number(input.value) / 100;
+        fieldDraft[field] = parsePercentage(input.value);
         const validation = validateRegion(fieldDraft);
         if (!validation.valid) {
           showError(validation.error);
@@ -286,6 +291,7 @@
             ? "move"
             : "draw",
         handle: handle ? handle.dataset.regionHandle : "",
+        pointerId: event.pointerId,
         start,
         initial: { ...region },
       };
@@ -294,7 +300,7 @@
     });
 
     preview.addEventListener("pointermove", (event) => {
-      if (!interaction) return;
+      if (!interaction || event.pointerId !== interaction.pointerId) return;
       const current = pointFromEvent(event);
       if (interaction.mode === "draw") {
         setRegion(drawRegion(interaction.start, current));
@@ -319,7 +325,7 @@
     });
 
     function finishInteraction(event) {
-      if (!interaction) return;
+      if (!interaction || event.pointerId !== interaction.pointerId) return;
       if (preview.hasPointerCapture(event.pointerId)) {
         preview.releasePointerCapture(event.pointerId);
       }
@@ -378,6 +384,7 @@
 
   return {
     FULL_FRAME_REGION,
+    parsePercentage,
     normalizeRegion,
     validateRegion,
     drawRegion,

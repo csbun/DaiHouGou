@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable, Sequence
+from contextlib import suppress
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -461,10 +462,8 @@ class Runtime:
                 self._camera_runtimes.pop(stream_id, None)
                 self._camera_descriptors.pop(stream_id, None)
                 if camera is not None:
-                    try:
+                    with suppress(Exception):
                         await camera.stop()
-                    except Exception:  # noqa: BLE001
-                        camera = None
                 self._camera_runtime_errors[stream_id] = "camera_start_failed"
                 continue
             self._camera_descriptors[stream_id] = descriptor
