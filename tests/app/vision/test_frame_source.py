@@ -62,6 +62,17 @@ def test_frame_source_rejects_unsupported_size() -> None:
         FfmpegFrameSource("rtsp://127.0.0.1:8554/front", size=320)
 
 
+def test_frame_source_preserves_legacy_positional_injection_arguments() -> None:
+    factory = lambda command: FakeProcess(b"")
+    sleeper = lambda seconds: None
+
+    source = FfmpegFrameSource(
+        "rtsp://127.0.0.1:8554/front", 1.0, 256, factory, sleeper, 30.0, 1.0
+    )
+
+    assert "crop=" not in source._command[source._command.index("-vf") + 1]
+
+
 def test_reconnect_delay_caps_at_thirty_seconds() -> None:
     assert [reconnect_delay(attempt) for attempt in range(7)] == [1, 2, 4, 8, 16, 30, 30]
 

@@ -127,11 +127,11 @@ class FfmpegFrameSource:
         stream_url: str,
         fps: float = 1.0,
         size: int = PERSON_FRAME_SIZE,
-        region: DetectionRegion = FULL_FRAME_REGION,
         process_factory: ProcessFactory = _spawn,
         sleeper: Callable[[float], None] = time.sleep,
         stall_timeout: float = DEFAULT_STALL_TIMEOUT_SECONDS,
         watchdog_interval: float = DEFAULT_WATCHDOG_INTERVAL_SECONDS,
+        region: DetectionRegion = FULL_FRAME_REGION,
     ) -> None:
         if size not in {PERSON_FRAME_SIZE, OBJECT_FRAME_SIZE}:
             raise ValueError("unsupported frame size")
