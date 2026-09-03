@@ -147,33 +147,45 @@ ssh -L 1984:127.0.0.1:1984 SERVER_USER@SERVER_IP
 `xiaobai_25k` 操作都可以跳过，不会阻塞第 14 节。GuDuck 会发现 `go2rtc` 中全部已命名
 码流，因此以后新增摄像头时不需要修改应用环境变量或重启应用，只需在管理页手动刷新。
 
-以下操作从小米账号已登录并显示摄像头列表开始：
+以下操作从小米账号已登录并显示摄像头列表开始。不要按列表顺序判断设备；先用米家设备名称
+分别找到“小白智能摄像机”和“小白智能摄像机 2.5K 版”的候选项，再核对每项显示的型号，
+并用实际画面对应的房间或视角做最终确认。记录登录后显示的账号标识、令牌和每台设备的完整
+`xiaomi://` 源地址。当前 go2rtc 版本不会把页面中的登录或设备信息写回 YAML，下面的配置
+必须直接在服务器上编辑：
 
-1. 不要按列表顺序判断设备。先用米家设备名称分别找到“小白智能摄像机”和
-   “小白智能摄像机 2.5K 版”的候选项，再核对每项显示的型号。对候选项分别打开 go2rtc
-   预览，用实际画面对应的房间或视角做最终确认，避免名称重复或设备排序变化时选错摄像头。
-2. 选择“小白智能摄像机”，将流名称固定为 `xiaobai`；选择“小白智能摄像机 2.5K 版”，
-   将流名称固定为 `xiaobai_25k`。后续清单、探测和报告都使用这两个名称，不要互换。
-3. 两路都保留 Web UI 自动生成的完整 `xiaomi://` 源地址，不要手工拼接或改写其中的账号、
-   地区、局域网 IP、DID 或 `model`。只在查询参数中设置 `subtype=sd`：地址已有 `?` 时添加
-   `&subtype=sd`，没有 `?` 时添加 `?subtype=sd`；如果已经有 `subtype` 参数，只修改它的值。
-4. 保存后返回 Streams 页面，逐路打开预览并各观察至少 30 秒。通过要求是画面持续更新，
-   不能只有首帧，也不能持续显示连接错误。
-5. 如果某一路的 `sd` 不能通过 30 秒预览，按 `auto`、`1`、`2` 的顺序逐项尝试。每次只改
-   这一项的 `subtype` 值，保存后重新观察至少 30 秒，不要同时改其他地址参数。选择其中最低且
-   能连续显示的码流，并记录该路最终使用的 `subtype`；不要在清单、issue 或报告中记录完整
-   `xiaomi://` 地址。
+```bash
+vi deploy/go2rtc/state/go2rtc.yaml
+```
 
-保存后的配置结构应类似下面的脱敏示例；尖括号内容只表示占位，不是需要原样填写的值：
+将配置整理为以下结构；`xxx`、`xx` 和 `192.168.x.x` 都是占位符，必须替换为实际值：
 
 ```yaml
+api:
+  listen: "127.0.0.1:1984"
+  local_auth: false
+rtsp:
+  listen: "127.0.0.1:8554"
+webrtc:
+  listen: ""
+log:
+  format: json
+  level: info
+  output: stdout
 xiaomi:
-  "<REDACTED_ACCOUNT_ID>": "<REDACTED_TOKEN>"
+  "xxx": xxx
 streams:
-  xiaobai:
-    - xiaomi://<REDACTED>?did=<REDACTED_DID>&model=<REDACTED_MODEL>&subtype=<SELECTED_SUBTYPE>
-  xiaobai_25k:
-    - xiaomi://<REDACTED>?did=<REDACTED_DID>&model=<REDACTED_MODEL>&subtype=<SELECTED_SUBTYPE>
+  cam1:
+    - "xiaomi://xxx:cn@192.168.x.x?did=xx&model=xxx&subtype=sd"
+```
+
+每台摄像头使用稳定且唯一的流名称，例如 `cam1`、`cam2`；完整 PoC 仍建议将两台目标设备
+命名为 `xiaobai` 和 `xiaobai_25k`。复制源地址时不要手工重写账号、Token、DID、型号或 IP。
+只在查询参数中设置 `subtype=sd`；如果 `sd` 不能通过 30 秒预览，按 `auto`、`1`、`2` 的
+顺序逐项修改这一项，每次保存后重启 go2rtc 并观察至少 30 秒，选择能够持续更新且码率最低的
+码流。配置修改后重启 go2rtc：
+
+```bash
+docker compose restart go2rtc
 ```
 
 实际配置中的账号标识、令牌、DID、局域网 IP 和完整 `xiaomi://` 地址都是家庭隐私数据，
@@ -207,7 +219,8 @@ RTSP 连接；它与 `xiaomi://` 源地址中控制摄像头到 go2rtc 的 `tran
 如果遗漏该选项，ffprobe 可能先尝试 go2rtc 不支持的 UDP RTSP 传输并显示
 `461 Unsupported transport`。不要仅因为这个 `461` 就修改小米源地址。
 
-若 API 输出缺少名称，检查 Web UI 中是否使用了上面的固定名称。若名称存在，但预览或
+若 API 输出缺少名称，检查 `deploy/go2rtc/state/go2rtc.yaml` 中 `streams` 下是否使用了上面的固定名称。
+若名称存在，但预览或
 ffprobe 返回 `404 Not Found`，先用只请求视频的 API 调用获取 Xiaomi 层的真实错误：
 
 ```bash

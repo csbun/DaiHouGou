@@ -70,15 +70,6 @@ chmod 600 .env.poc .env
 这些本地环境文件和状态目录已被 Git 及 Docker 构建上下文忽略。不要提交其中的账号、密码、
 Token、DID、局域网地址或完整 `xiaomi://` 地址。
 
-从现有多摄像头版本升级时，按运行手册先用旧版 Compose 文件停止 app；拉取新代码后，从
-`.env.example` 新建 `.env`，再人工迁移账号、音箱和网络等配置值。不要整份复制旧
-`.env.mvp`，否则其中的旧容器路径会绕过新版挂载。GuDuck 首次启动会把
-`deploy/app/state/daihougou.db` 及其 WAL/SHM 文件自动改名为 `guduck.db`，数据库内容和
-schema 不变。不要让新旧 app 同时访问该目录。
-
-从更早的单摄像头版本升级时，新版本不迁移旧 SQLite 结构。必须按运行手册“14.1 升级前
-停止与数据库迁移”先备份并移走旧数据库，再启动 GuDuck。
-
 ## 配置摄像头
 
 ### 1. 启动 go2rtc
@@ -102,13 +93,41 @@ ssh -L 1984:127.0.0.1:1984 SERVER_USER@SERVER_IP
 ### 2. 添加小米摄像头
 
 在 go2rtc 页面中登录拥有摄像头的小米账号，从设备列表中按设备名称、型号和实际预览画面
-确认目标摄像头：
+确认目标摄像头，并记录登录后显示的账号标识、令牌和每台设备的完整 `xiaomi://` 源地址。
+当前 go2rtc 版本不会把这些内容通过页面写回 YAML，需要直接编辑宿主机配置：
 
-1. 为每台摄像头设置稳定且唯一的流名称，例如 `xiaobai`、`xiaobai_25k`。该名称会原样显示
-   在 GuDuck 管理页中，应用内不能改名。
-2. 保留页面自动生成的完整 `xiaomi://` 源地址，不要手工重写账号、Token、DID、型号或 IP。
-3. 优先在源地址查询参数中使用 `subtype=sd`，保存后连续预览至少 30 秒。
-4. 如果 `sd` 不稳定，依次尝试 `auto`、`1`、`2`，选择码率最低且可以持续更新的码流。
+```bash
+vi deploy/go2rtc/state/go2rtc.yaml
+```
+
+将配置整理为以下结构；`xxx`、`xx` 和 `192.168.x.x` 都是占位符，必须替换为实际值：
+
+```yaml
+api:
+  listen: "127.0.0.1:1984"
+  local_auth: false
+rtsp:
+  listen: "127.0.0.1:8554"
+webrtc:
+  listen: ""
+log:
+  format: json
+  level: info
+  output: stdout
+xiaomi:
+  "xxx": xxx
+streams:
+  cam1:
+    - "xiaomi://xxx:cn@192.168.x.x?did=xx&model=xxx&subtype=sd"
+```
+
+每台摄像头使用稳定且唯一的流名称，例如 `cam1`、`cam2`；名称会原样显示在 GuDuck 管理页中。
+复制完整源地址时不要手工重写账号、Token、DID、型号或 IP；如果 `sd` 不稳定，只修改
+`subtype` 为 `auto`、`1` 或 `2`，选择能够持续更新且码率最低的码流。保存后重启 go2rtc：
+
+```bash
+docker compose restart go2rtc
+```
 
 配置会保存在 `deploy/go2rtc/state/go2rtc.yaml`。该文件包含家庭设备凭据，不得提交或公开。
 
@@ -205,6 +224,30 @@ ip -4 -brief address
 | `PERSON_THRESHOLD` | `0.55` | 人员检测置信度阈值，范围为 0 到 1 |
 | `LEAVE_SECONDS` | `10.0` | 连续无人多久后判定人员离开 |
 | `WELCOME_COOLDOWN_SECONDS` | `60.0` | 两次欢迎播报之间的最短间隔 |
+
+## 安装 Objects365 模型
+
+Objects365 模型不随 GuDuck 镜像发布。目标机在完成 `.env` 配置后，可以在仓库根目录执行下面
+的一条命令；脚本会下载官方 checkpoint、校验 SHA384，在临时虚拟环境中导出固定的
+`416x416` 静态 ONNX，备份旧模型，更新 `OBJECTS365_MODEL`，并验证容器内 OpenCV DNN 能够
+加载它：
+
+```bash
+bash scripts/install-objects365.sh
+```
+
+脚本需要目标机具备 `curl`、`python3-venv`、`sha384sum`、Docker Compose v2 和可用的 Docker
+daemon。导出依赖（`ultralytics==8.4.138`、`onnx==1.19.1`）和 checkpoint 只会写入临时目录，
+不会安装进 GuDuck 镜像。官方发布的是 checkpoint，ONNX 文件由仓库中的导出器生成：
+
+```text
+Checkpoint: https://github.com/ultralytics/assets/releases/download/v8.4.0/yolo26n-objv1-150.pt
+SHA384:     67104718c37bd2277a98390bcf5bf841d36de3db8b92abadb40f4db05e3710433ce8145d62aa6eda373fa79399b506f9
+```
+
+模型会保存到 `deploy/app/models/object_detection_objects365_yolo26n_416.onnx`，该目录通过
+Compose 只读挂载到容器。安装完成后打开 GuDuck「设置」选择 `Objects365`，再为需要的摄像头
+开启“绘本物体播报”规则；脚本不会自动改变当前检测器选择。
 
 ## 启动应用
 
