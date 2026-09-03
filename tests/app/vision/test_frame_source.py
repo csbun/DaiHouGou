@@ -7,14 +7,14 @@ import time
 import numpy as np
 import pytest
 
-from daihougou.detection_region import FULL_FRAME_REGION, DetectionRegion
-from daihougou.vision.frame_source import (
+from guduck.detection_region import FULL_FRAME_REGION, DetectionRegion
+from guduck.vision.frame_source import (
     FRAME_BYTES,
     FfmpegFrameSource,
     build_ffmpeg_command,
     reconnect_delay,
 )
-from daihougou.vision.scene_change import SceneChangeGate
+from guduck.vision.scene_change import SceneChangeGate
 
 
 def test_full_frame_keeps_existing_filter_without_crop() -> None:

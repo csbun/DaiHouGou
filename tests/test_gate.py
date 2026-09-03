@@ -1,4 +1,4 @@
-from daihougou_poc.gate import (
+from guduck_poc.gate import (
     choose_speaker_backend,
     host_resources_pass,
     inventory_fingerprint,

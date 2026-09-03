@@ -1,8 +1,12 @@
 .git
 .worktrees
+.env
 .env.poc
+# Keep legacy secret files out of build contexts during the GuDuck transition.
 .env.mvp
 .venv
+build
+dist
 artifacts
 config/poc-devices.json
 deploy/app/state

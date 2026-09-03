@@ -7,15 +7,15 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from daihougou.detection_region import DetectionRegion
-from daihougou.detection_scheduler import DetectionScheduler
-from daihougou.runtime import Runtime
-from daihougou.settings import SpeakerConfig
-from daihougou.speaker import SpeakResult
-from daihougou.speaker_worker import SpeakerManager
-from daihougou.storage import Storage
-from daihougou.vision.frame_source import FfmpegFrameSource
-from daihougou.vision.person_detector import PersonDetection
+from guduck.detection_region import DetectionRegion
+from guduck.detection_scheduler import DetectionScheduler
+from guduck.runtime import Runtime
+from guduck.settings import SpeakerConfig
+from guduck.speaker import SpeakResult
+from guduck.speaker_worker import SpeakerManager
+from guduck.storage import Storage
+from guduck.vision.frame_source import FfmpegFrameSource
+from guduck.vision.person_detector import PersonDetection
 
 pytestmark = pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg is required")
 

@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from daihougou_poc.settings import Settings
+from guduck_poc.settings import Settings
 
 
 def test_settings_reject_non_local_go2rtc_api(tmp_path: Path) -> None:

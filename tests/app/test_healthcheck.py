@@ -1,4 +1,4 @@
-from daihougou.healthcheck import health_url
+from guduck.healthcheck import health_url
 
 
 def test_healthcheck_uses_configured_lan_bind_address() -> None:

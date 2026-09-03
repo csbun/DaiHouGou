@@ -9,7 +9,7 @@ RUN apt-get update \
 WORKDIR /workspace
 
 COPY pyproject.toml ./
-COPY .dockerignore compose.poc.yaml .env.mvp.example ./
+COPY .dockerignore compose.yaml .env.example ./
 COPY docker ./docker
 COPY src ./src
 COPY tests ./tests
@@ -17,4 +17,4 @@ COPY tests ./tests
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install '.[dev]'
 
-ENTRYPOINT ["daihougou-poc"]
+ENTRYPOINT ["guduck-poc"]

@@ -10,7 +10,7 @@ const {
   moveRegion,
   resizeRegion,
   saveStatusMessage,
-} = require("../../src/daihougou/static/region-editor.js");
+} = require("../../src/guduck/static/region-editor.js");
 
 test("percentage parsing rejects an empty field instead of treating it as zero", () => {
   assert.equal(Number.isNaN(parsePercentage("")), true);

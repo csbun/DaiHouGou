@@ -1,7 +1,7 @@
 # Objects365 通用物体检测 PoC 运行手册
 
 本手册验收“画面明显变化后，用固定词表检测绘本中的物体并播报英文类别”。人员进入检测属于
-已有 MVP，不是本 PoC 的前置条件。默认测试只加载物体模型；人员模型仅用于最后的可选联调。
+已有 GuDuck 正式应用，不是本 PoC 的前置条件。默认测试只加载物体模型；人员模型仅用于最后的可选联调。
 
 Objects365 YOLO26n 是已经训练好的 365 类模型，不需要先训练，也不需要下载完整 Objects365
 数据集。它不是开放世界识别：输入只有画面，不需要提示词，但输出仍限定在模型的 365 类中。
@@ -22,7 +22,7 @@ manifest、人物或家庭场景截图提交 Git、上传到第三方服务或�
 CLI 只接受仓库外的固定目录：
 
 ```text
-/tmp/daihougou-object-validation/
+/tmp/guduck-object-validation/
   manifest.json
   page-001.jpg
   page-002.jpg
@@ -59,9 +59,9 @@ CLI 只接受仓库外的固定目录：
 .venv/bin/python -c '
 from pathlib import Path
 from tools.object_detection_poc import load_manifest
-from daihougou.vision.objects365_detector import OBJECTS365_CATEGORIES
+from guduck.vision.objects365_detector import OBJECTS365_CATEGORIES
 pages = load_manifest(
-    Path("/tmp/daihougou-object-validation/manifest.json"),
+    Path("/tmp/guduck-object-validation/manifest.json"),
     categories=OBJECTS365_CATEGORIES,
     vocabulary_name="Objects365",
 )
@@ -84,8 +84,8 @@ SHA384: 67104718c37bd2277a98390bcf5bf841d36de3db8b92abadb40f4db05e3710433ce8145d
 在仓库根目录执行：
 
 ```bash
-python3 -m venv /tmp/daihougou-objects365-export
-/tmp/daihougou-objects365-export/bin/pip install \
+python3 -m venv /tmp/guduck-objects365-export
+/tmp/guduck-objects365-export/bin/pip install \
   ultralytics==8.4.138 onnx==1.19.1
 curl --fail --show-error --location \
   https://github.com/ultralytics/assets/releases/download/v8.4.0/yolo26n-objv1-150.pt \
@@ -93,7 +93,7 @@ curl --fail --show-error --location \
 printf '%s  %s\n' \
   67104718c37bd2277a98390bcf5bf841d36de3db8b92abadb40f4db05e3710433ce8145d62aa6eda373fa79399b506f9 \
   /tmp/yolo26n-objv1-150.pt | shasum -a 384 -c -
-/tmp/daihougou-objects365-export/bin/python \
+/tmp/guduck-objects365-export/bin/python \
   tools/export_objects365_model.py \
   --checkpoint /tmp/yolo26n-objv1-150.pt \
   --output /tmp/object_detection_objects365_yolo26n_416.onnx
@@ -113,7 +113,7 @@ OpenCV DNN 使用 one-to-many 网格输出，不能直接使用 YOLO26 的 end-t
 ```bash
 .venv/bin/python tools/object_detection_poc.py \
   --adapter objects365 \
-  --corpus /tmp/daihougou-object-validation \
+  --corpus /tmp/guduck-object-validation \
   --object-model /tmp/object_detection_objects365_yolo26n_416.onnx \
   --output /tmp/object-category-detection-local.json
 ```
@@ -135,7 +135,7 @@ CLI 会执行与生产相同的统一策略：排除 `person`、过滤占画面�
 ```bash
 python tools/object_detection_poc.py \
   --adapter objects365 \
-  --corpus /tmp/daihougou-object-validation \
+  --corpus /tmp/guduck-object-validation \
   --object-model /tmp/object_detection_objects365_yolo26n_416.onnx \
   --output /tmp/object-category-detection-target.json
 ```
@@ -154,19 +154,19 @@ cp /tmp/object_detection_objects365_yolo26n_416.onnx \
 chmod 0444 deploy/app/models/object_detection_objects365_yolo26n_416.onnx
 ```
 
-在 `.env.mvp` 中设置模型路径：
+在 `.env` 中设置模型路径：
 
 ```dotenv
-OBJECTS365_MODEL=/opt/daihougou/models/custom/object_detection_objects365_yolo26n_416.onnx
+OBJECTS365_MODEL=/opt/guduck/models/custom/object_detection_objects365_yolo26n_416.onnx
 ```
 
 Compose 会把 `deploy/app/models` 只读挂载到容器。模型目录同时被 Git 和 Docker build context
 排除，不会进入提交或镜像。重建并重启应用：
 
 ```bash
-docker compose -f compose.poc.yaml build app
-docker compose -f compose.poc.yaml up -d app
-docker compose -f compose.poc.yaml logs --tail=100 app
+docker compose build app
+docker compose up -d app
+docker compose logs --tail=100 app
 ```
 
 打开“设置”页，在“物体检测器”中选择 `Objects365 YOLO26n` 并应用。选择是全局配置，对所有
@@ -181,9 +181,9 @@ docker compose -f compose.poc.yaml logs --tail=100 app
 ```bash
 python tools/object_detection_poc.py \
   --adapter objects365 \
-  --corpus /tmp/daihougou-object-validation \
+  --corpus /tmp/guduck-object-validation \
   --object-model /tmp/object_detection_objects365_yolo26n_416.onnx \
-  --person-model /opt/daihougou/models/person_detection_mediapipe_2023mar.onnx \
+  --person-model /opt/guduck/models/person_detection_mediapipe_2023mar.onnx \
   --camera-count 2 \
   --output /tmp/object-category-detection-combined.json
 ```
@@ -201,8 +201,8 @@ rm -f /tmp/object_detection_objects365_yolo26n_416.onnx
 rm -f /tmp/object-category-detection-local.json
 rm -f /tmp/object-category-detection-target.json
 rm -f /tmp/object-category-detection-combined.json
-rm -rf /tmp/daihougou-object-validation
-rm -rf /tmp/daihougou-objects365-export
+rm -rf /tmp/guduck-object-validation
+rm -rf /tmp/guduck-objects365-export
 ```
 
 若准确率不足，后续可以针对绘本域微调或重新选择类别范围；这属于提升识别率的独立实验，

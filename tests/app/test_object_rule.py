@@ -1,16 +1,16 @@
-from daihougou.object_catalog import (
+from guduck.object_catalog import (
     COCO_CATEGORY_NAMES,
     OBJECTS365_CATEGORY_NAMES,
     SUPPORTED_CATEGORY_NAMES,
 )
-from daihougou.object_rule import ObjectCategoryAnnouncementRule
-from daihougou.rules import OBJECT_RULE_ID
-from daihougou.vision.object_detector import (
+from guduck.object_rule import ObjectCategoryAnnouncementRule
+from guduck.rules import OBJECT_RULE_ID
+from guduck.vision.object_detector import (
     COCO_CATEGORIES,
     DetectedObject,
     ObjectDetection,
 )
-from daihougou.vision.objects365_detector import OBJECTS365_CATEGORIES
+from guduck.vision.objects365_detector import OBJECTS365_CATEGORIES
 
 
 class RuleState:

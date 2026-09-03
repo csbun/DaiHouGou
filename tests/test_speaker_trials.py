@@ -1,8 +1,8 @@
 from pathlib import Path
 
-from daihougou_poc.report import JsonlReport
-from daihougou_poc.speaker_trials import annotate_audible, run_trials
-from daihougou_poc.speakers.base import SpeakResult
+from guduck_poc.report import JsonlReport
+from guduck_poc.speaker_trials import annotate_audible, run_trials
+from guduck_poc.speakers.base import SpeakResult
 
 
 class FakeSpeaker:

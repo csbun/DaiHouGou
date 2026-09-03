@@ -5,13 +5,13 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-import daihougou.main as main_module
-from daihougou.main import create_production_app
-from daihougou.rules import OBJECT_RULE_ID
-from daihougou.settings import ObjectDetectorAdapter, Settings
-from daihougou.speaker import SpeakResult
-from daihougou.storage import Storage
-from daihougou.web import create_app
+import guduck.main as main_module
+from guduck.main import create_production_app
+from guduck.rules import OBJECT_RULE_ID
+from guduck.settings import ObjectDetectorAdapter, Settings
+from guduck.speaker import SpeakResult
+from guduck.storage import Storage
+from guduck.web import create_app
 
 
 class FakeSpeaker:
@@ -51,7 +51,7 @@ def test_production_app_builds_one_speaker_per_config(tmp_path: Path, monkeypatc
 
     app = create_production_app(settings_for(tmp_path))
 
-    assert app.title == "大口九"
+    assert app.title == "GuDuck"
     assert created_dids == ["1", "2"]
 
 
@@ -175,7 +175,7 @@ def test_production_loads_selected_objects365_adapter_only_when_object_rule_is_e
         "create_app",
         lambda runtime, **kwargs: create_app(runtime, csrf_token="fixed-token", **kwargs),
     )
-    persisted = Storage(tmp_path / "daihougou.db")
+    persisted = Storage(tmp_path / "guduck.db")
     persisted.initialize()
     persisted.set_object_detector_adapter(ObjectDetectorAdapter.OBJECTS365)
     settings = replace(settings_for(tmp_path), objects365_model=Path("/models/objects365.onnx"))

@@ -5,17 +5,17 @@ from urllib.parse import urlencode
 import pytest
 from fastapi.testclient import TestClient
 
-from daihougou.camera_snapshot import SnapshotUnavailable
-from daihougou.detection_region import FULL_FRAME_REGION, DetectionRegion
-from daihougou.runtime import (
+from guduck.camera_snapshot import SnapshotUnavailable
+from guduck.detection_region import FULL_FRAME_REGION, DetectionRegion
+from guduck.runtime import (
     CameraView,
     ObjectDetectorOption,
     RuntimeSnapshot,
     SpeakerOption,
 )
-from daihougou.settings import ObjectDetectorAdapter
-from daihougou.storage import StoredEvent, normalize_welcome_phrases
-from daihougou.web import create_app
+from guduck.settings import ObjectDetectorAdapter
+from guduck.storage import StoredEvent, normalize_welcome_phrases
+from guduck.web import create_app
 
 
 def snapshot_fixture(
@@ -188,7 +188,7 @@ def test_home_lists_cameras_and_links_to_settings_without_phrase_editor() -> Non
         response = client.get("/")
 
     assert response.status_code == 200
-    assert "大口九" in response.text
+    assert "GuDuck" in response.text
     assert "front" in response.text
     assert "back" in response.text
     assert 'href="/settings"' in response.text
@@ -197,7 +197,7 @@ def test_home_lists_cameras_and_links_to_settings_without_phrase_editor() -> Non
     assert "你好呀，欢迎回来。" not in response.text
     assert "客厅音箱" in response.text
     assert "123456789" not in response.text
-    assert response.cookies["daihougou_csrf"] == "fixed-token"
+    assert response.cookies["guduck_csrf"] == "fixed-token"
 
 
 def test_home_links_each_camera_to_independent_detection_region_page() -> None:

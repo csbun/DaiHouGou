@@ -12,21 +12,21 @@ from typing import Any
 import cv2
 import numpy as np
 
-from daihougou.object_selection import select_announced_objects
-from daihougou.settings import ObjectDetectorAdapter
-from daihougou.vision.object_detector import COCO_CATEGORIES, ObjectDetector
-from daihougou.vision.objects365_detector import (
+from guduck.object_selection import select_announced_objects
+from guduck.settings import ObjectDetectorAdapter
+from guduck.vision.object_detector import COCO_CATEGORIES, ObjectDetector
+from guduck.vision.objects365_detector import (
     OBJECTS365_CATEGORIES,
     Objects365ObjectDetector,
 )
-from daihougou.vision.person_detector import PersonDetector
+from guduck.vision.person_detector import PersonDetector
 
 PRIMARY_ACCURACY_GATE = 0.80
 FALSE_ANNOUNCEMENT_GATE = 0.05
 OBJECT_P95_GATE_MS = 1000
 PEAK_RSS_GATE_BYTES = 1024**3
 CYCLE_P95_GATE_MS = 1000
-VALIDATION_CORPUS = Path("/tmp/daihougou-object-validation").resolve()
+VALIDATION_CORPUS = Path("/tmp/guduck-object-validation").resolve()
 
 
 @dataclass(frozen=True)

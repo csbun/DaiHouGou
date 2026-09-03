@@ -1,8 +1,8 @@
 import json
 from pathlib import Path
 
-from daihougou_poc.events import ProbeEvent
-from daihougou_poc.report import JsonlReport
+from guduck_poc.events import ProbeEvent
+from guduck_poc.report import JsonlReport
 
 
 def test_report_redacts_secret_fields(tmp_path: Path) -> None:

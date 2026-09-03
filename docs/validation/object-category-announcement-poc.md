@@ -36,8 +36,8 @@ evaluation material is improved.
 
 ```text
 python tools/object_detection_poc.py \
-  --corpus /tmp/daihougou-object-validation \
-  --object-model /tmp/daihougou-object-source/object_detection_nanodet_2022nov.onnx \
-  --output /tmp/daihougou-object-validation/local-baseline.json
+  --corpus /tmp/guduck-object-validation \
+  --object-model /tmp/guduck-object-source/object_detection_nanodet_2022nov.onnx \
+  --output /tmp/guduck-object-validation/local-baseline.json
 ```
 

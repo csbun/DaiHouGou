@@ -256,7 +256,7 @@ def test_main_rejects_corpus_outside_fixed_private_directory(
 def test_main_accepts_a_fixed_validation_directory_that_resolves_through_a_symlink(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    from daihougou.vision.object_detector import DetectedObject, ObjectDetection
+    from guduck.vision.object_detector import DetectedObject, ObjectDetection
 
     corpus = write_corpus(tmp_path, expected_on_all_pages=True)
     corpus_alias = tmp_path / "validation-alias"
@@ -325,8 +325,8 @@ def test_main_returns_two_when_a_manifest_image_cannot_be_read(
 def test_main_warms_models_measures_pages_and_runs_serialized_two_camera_cycles(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    from daihougou.vision.object_detector import DetectedObject
-    from daihougou.vision.person_detector import PersonDetection
+    from guduck.vision.object_detector import DetectedObject
+    from guduck.vision.person_detector import PersonDetection
 
     corpus = write_corpus(tmp_path, expected_on_all_pages=True)
     monkeypatch.setattr("tools.object_detection_poc.VALIDATION_CORPUS", corpus.resolve())
@@ -426,7 +426,7 @@ def test_main_warms_models_measures_pages_and_runs_serialized_two_camera_cycles(
 def test_main_defaults_to_object_only_without_loading_person_model(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    from daihougou.vision.object_detector import DetectedObject, ObjectDetection
+    from guduck.vision.object_detector import DetectedObject, ObjectDetection
 
     corpus = write_corpus(tmp_path, expected_on_all_pages=True)
     monkeypatch.setattr("tools.object_detection_poc.VALIDATION_CORPUS", corpus.resolve())
@@ -475,7 +475,7 @@ def test_main_defaults_to_object_only_without_loading_person_model(
 def test_main_uses_objects365_adapter_and_vocabulary_when_selected(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    from daihougou.vision.object_detector import DetectedObject, ObjectDetection
+    from guduck.vision.object_detector import DetectedObject, ObjectDetection
 
     corpus = write_corpus(
         tmp_path,
@@ -529,8 +529,8 @@ def test_main_uses_objects365_adapter_and_vocabulary_when_selected(
 def test_main_returns_one_for_a_measured_gate_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    from daihougou.vision.object_detector import ObjectDetection
-    from daihougou.vision.person_detector import PersonDetection
+    from guduck.vision.object_detector import ObjectDetection
+    from guduck.vision.person_detector import PersonDetection
 
     corpus = write_corpus(tmp_path)
     monkeypatch.setattr("tools.object_detection_poc.VALIDATION_CORPUS", corpus.resolve())

@@ -1,0 +1,56 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1080 300" role="img" aria-labelledby="title desc">
+  <title id="title">GuDuck</title>
+  <desc id="desc">A green-headed mallard beside the GuDuck wordmark.</desc>
+  <style>
+    .word-gu { fill: #18231f; }
+    .word-duck { fill: #12644f; }
+
+    @media (prefers-color-scheme: dark) {
+      .word-gu { fill: #f3f6f4; }
+      .word-duck { fill: #67c5a8; }
+    }
+  </style>
+
+  <g transform="translate(24 18)">
+    <path
+      d="M67 246c8-47 31-82 70-105 38-23 90-27 126-4 34 21 51 62 44 109Z"
+      fill="#9a4f37"
+    />
+    <path
+      d="M101 218c11-26 29-49 53-64 35-22 79-27 114-12 13 6 24 14 32 24-11-33-35-56-67-65-42-12-89 2-117 35-20 24-27 53-15 82Z"
+      fill="#b46343"
+    />
+    <path
+      d="M123 169c-25-23-37-55-32-86 6-39 36-68 75-75 42-8 84 10 105 46 13 22 16 48 9 72-7 25-23 44-43 57l-84 3c-11-5-21-11-30-17Z"
+      fill="#12644f"
+    />
+    <path
+      d="M103 124c15 18 37 29 61 31 35 4 70-10 91-38 10-13 17-28 20-45 8 25 6 53-7 76-16 28-45 45-77 47-33 1-65-13-84-39-7-10-12-21-15-33 3 1 7 1 11 1Z"
+      fill="#0d5544"
+    />
+    <path
+      d="M108 177c18 12 40 18 62 18 31 0 61-11 83-33 5 8 9 17 12 26-25 22-58 34-92 34-27 0-53-7-74-21 2-9 5-17 9-24Z"
+      fill="#f7f4e9"
+    />
+    <path
+      d="M253 73c25 3 43 15 57 34l34 45c3 4 2 10-2 13-23 18-56 23-84 13l-22-8c23-22 31-57 17-97Z"
+      fill="#dfa92d"
+    />
+    <path
+      d="M257 154c28 8 58 4 82-12l8 10c3 4 2 10-2 13-24 18-57 23-86 13l-22-8c8-5 14-10 20-16Z"
+      fill="#c9891f"
+    />
+    <path d="M283 116c13 2 25 8 34 17" fill="none" stroke="#80551c" stroke-linecap="round" stroke-width="5" />
+    <circle cx="221" cy="69" r="17" fill="#f6f2df" />
+    <circle cx="224" cy="69" r="10" fill="#17211e" />
+    <circle cx="228" cy="65" r="3" fill="#ffffff" />
+    <path d="M165 22c18-7 39-8 58-2" fill="none" stroke="#2a8069" stroke-linecap="round" stroke-width="8" />
+    <path d="M354 103c13 8 23 20 28 34" fill="none" stroke="#dfa92d" stroke-linecap="round" stroke-width="7" />
+    <path d="M365 76c24 13 42 35 50 61" fill="none" stroke="#12644f" stroke-linecap="round" stroke-width="7" />
+  </g>
+
+  <g font-family="Arial, Helvetica, sans-serif" font-size="132" font-weight="700">
+    <text class="word-gu" x="450" y="198">Gu</text>
+    <text class="word-duck" x="605" y="198">Duck</text>
+  </g>
+</svg>

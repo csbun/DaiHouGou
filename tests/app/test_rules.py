@@ -1,5 +1,5 @@
-from daihougou.presence import PresenceEvent, PresenceEventKind
-from daihougou.rules import WELCOME_RULE_ID, WelcomeRule
+from guduck.presence import PresenceEvent, PresenceEventKind
+from guduck.rules import WELCOME_RULE_ID, WelcomeRule
 
 
 class RuleState:

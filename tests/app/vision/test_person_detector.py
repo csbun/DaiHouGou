@@ -3,7 +3,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from daihougou.vision.person_detector import PersonDetector
+from guduck.vision.person_detector import PersonDetector
 
 
 class FakeNet:

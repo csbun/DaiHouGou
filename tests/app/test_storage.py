@@ -4,16 +4,16 @@ from pathlib import Path
 
 import pytest
 
-from daihougou.detection_region import FULL_FRAME_REGION, DetectionRegion
-from daihougou.rules import (
+from guduck.detection_region import FULL_FRAME_REGION, DetectionRegion
+from guduck.rules import (
     BUILTIN_RULE_IDS,
     BUILTIN_RULE_NAMES,
     OBJECT_RULE_ID,
     WELCOME_PHRASES,
     WELCOME_RULE_ID,
 )
-from daihougou.settings import ObjectDetectorAdapter
-from daihougou.storage import SCHEMA_VERSION, EventRecord, IncompatibleSchemaError, Storage
+from guduck.settings import ObjectDetectorAdapter
+from guduck.storage import SCHEMA_VERSION, EventRecord, IncompatibleSchemaError, Storage
 
 EXPECTED_ENGLISH_WELCOME_PHRASES = (
     "Welcome home!",

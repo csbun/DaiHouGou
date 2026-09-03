@@ -2,8 +2,8 @@ import json
 import subprocess
 from unittest.mock import patch
 
-from daihougou.speaker import _run
-from daihougou_poc.speakers.direct import DirectSpeaker
+from guduck.speaker import _run
+from guduck_poc.speakers.direct import DirectSpeaker
 
 
 def test_direct_speaker_uses_l05c_play_text_action_without_a_shell() -> None:
@@ -69,11 +69,11 @@ def test_direct_speaker_passes_persistent_home_to_miservice() -> None:
         return 0, '{"code":0}', ""
 
     with patch.dict(
-        "os.environ", {"HOME": "/var/lib/daihougou/mi", "PATH": "/bin"}, clear=True
+        "os.environ", {"HOME": "/var/lib/guduck/mi", "PATH": "/bin"}, clear=True
     ):
         DirectSpeaker("user", "password", "did", run=run).speak("hello")
 
-    assert captured["HOME"] == "/var/lib/daihougou/mi"
+    assert captured["HOME"] == "/var/lib/guduck/mi"
 
 
 def test_direct_speaker_classifies_login_failure_without_storing_raw_error() -> None:
@@ -105,7 +105,7 @@ def test_miservice_runner_never_reads_interactive_input() -> None:
         captured.update(kwargs)
         return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
 
-    with patch("daihougou.speaker.subprocess.run", fake_run):
+    with patch("guduck.speaker.subprocess.run", fake_run):
         _run(["python", "-m", "miservice"], {}, 30)
 
     assert captured["stdin"] is subprocess.DEVNULL

@@ -1,6 +1,6 @@
 import pytest
 
-from daihougou.go2rtc import DiscoveryError, Go2RtcClient, rtsp_stream_url
+from guduck.go2rtc import DiscoveryError, Go2RtcClient, rtsp_stream_url
 
 
 def test_stream_names_are_sorted_and_validated() -> None:

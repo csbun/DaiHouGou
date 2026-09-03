@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from daihougou.settings import Settings, SpeakerConfig
+from guduck.settings import Settings, SpeakerConfig
 
 SPEAKERS = [
     {"id": "living_room", "name": "客厅音箱", "did": "123456789"},
@@ -25,14 +25,14 @@ def test_settings_parse_speakers_and_discovery_defaults() -> None:
     )
     assert settings.go2rtc_api_url == "http://127.0.0.1:1984"
     assert settings.go2rtc_rtsp_base_url == "rtsp://127.0.0.1:8554"
-    assert settings.data_dir == Path("/var/lib/daihougou/data")
-    assert settings.model == Path("/opt/daihougou/models/person_detection_mediapipe_2023mar.onnx")
+    assert settings.data_dir == Path("/var/lib/guduck/data")
+    assert settings.model == Path("/opt/guduck/models/person_detection_mediapipe_2023mar.onnx")
     assert settings.object_model == Path(
-        "/opt/daihougou/models/object_detection_nanodet_2022nov.onnx"
+        "/opt/guduck/models/object_detection_nanodet_2022nov.onnx"
     )
     assert not hasattr(settings, "object_detector_adapter")
     assert settings.objects365_model == Path(
-        "/opt/daihougou/models/custom/object_detection_objects365_yolo26n_416.onnx"
+        "/opt/guduck/models/custom/object_detection_objects365_yolo26n_416.onnx"
     )
     assert settings.detection_fps == 1.0
     assert settings.person_threshold == 0.55
@@ -47,7 +47,7 @@ def test_settings_require_speaker_catalog() -> None:
 
 
 @pytest.mark.parametrize("legacy_key", ["MI_DID", "STREAM_URL"])
-def test_settings_reject_legacy_mvp_keys_when_new_settings_are_present(
+def test_settings_reject_legacy_single_camera_keys_when_new_settings_are_present(
     legacy_key: str,
 ) -> None:
     with pytest.raises(ValueError, match=f"^{legacy_key} is not supported$"):

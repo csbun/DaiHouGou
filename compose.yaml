@@ -1,0 +1,63 @@
+services:
+  go2rtc:
+    image: ghcr.io/alexxit/go2rtc:1.9.14
+    container_name: guduck-go2rtc
+    network_mode: host
+    restart: unless-stopped
+    volumes:
+      - ./deploy/go2rtc/state:/config
+
+  app:
+    build:
+      context: .
+      dockerfile: docker/app.Dockerfile
+    image: guduck:local
+    container_name: guduck-app
+    network_mode: host
+    restart: unless-stopped
+    depends_on:
+      go2rtc:
+        condition: service_started
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      HOME: /var/lib/guduck/mi
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - ./deploy/app/state:/var/lib/guduck/data
+      - ./deploy/app/models:/opt/guduck/models/custom:ro
+      - ./deploy/miservice/state:/var/lib/guduck/mi
+    healthcheck:
+      test: ["CMD", "python", "-m", "guduck.healthcheck"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 45s
+
+  probe:
+    build:
+      context: .
+      dockerfile: docker/poc.Dockerfile
+    image: guduck-poc:local
+    network_mode: host
+    env_file:
+      - path: .env.poc
+        required: false
+    environment:
+      HOME: /var/lib/guduck/mi
+    volumes:
+      - ./artifacts:/workspace/artifacts
+      - ./config:/workspace/config:ro
+      - ./deploy/miservice/state:/var/lib/guduck/mi
+    profiles: ["tools"]
+
+  homeassistant:
+    image: ghcr.io/home-assistant/home-assistant:2026.8.3
+    container_name: guduck-homeassistant
+    network_mode: host
+    restart: unless-stopped
+    stop_grace_period: 60s
+    volumes:
+      - ./deploy/homeassistant/state:/config
+    profiles: ["ha"]

@@ -2,7 +2,7 @@ import cv2
 import numpy as np
 import pytest
 
-from daihougou.vision.object_detector import ObjectDetector
+from guduck.vision.object_detector import ObjectDetector
 
 
 class FakeNet:

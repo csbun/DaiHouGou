@@ -1,6 +1,6 @@
-# DaiHouGou
+# GuDuck
 
-DaiHouGou is a local-network childcare application that observes camera events and
+GuDuck is a local-network childcare application that observes camera events and
 responds through paired speakers without sending or retaining camera imagery.
 
 ## Language

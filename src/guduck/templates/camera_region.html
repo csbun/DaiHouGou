@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>检测区域 · {{ camera.stream_id }} · GuDuck</title>
+    <link rel="stylesheet" href="{{ url_for('static', path='/app.css') }}">
+    <script src="{{ url_for('static', path='/region-editor.js') }}" defer></script>
+  </head>
+  <body>
+    <header class="topbar region-topbar">
+      <div class="brand">
+        <p>摄像头检测区域</p>
+        <h1>{{ camera.stream_id }}</h1>
+      </div>
+      <a class="topbar-link" href="/">返回摄像头列表</a>
+    </header>
+
+    <main
+      class="region-main"
+      data-region-editor
+      data-camera-id="{{ camera.stream_id }}"
+      data-region-x="{{ camera.detection_region.x }}"
+      data-region-y="{{ camera.detection_region.y }}"
+      data-region-width="{{ camera.detection_region.width }}"
+      data-region-height="{{ camera.detection_region.height }}"
+    >
+      <div
+        class="region-editor-config"
+        data-snapshot-url="/commands/camera-snapshot"
+        data-save-url="/commands/camera-region"
+        data-csrf-token="{{ csrf_token }}"
+        hidden
+      ></div>
+
+      <section class="region-preview-section" aria-labelledby="preview-title">
+        <div class="section-header">
+          <div>
+            <h2 id="preview-title">当前画面</h2>
+            <p class="section-meta" data-preview-status>正在获取画面</p>
+          </div>
+          <button class="button secondary" type="button" data-refresh-preview>刷新画面</button>
+        </div>
+        <div
+          class="region-preview"
+          data-region-preview
+          aria-label="检测区域画布"
+          aria-busy="true"
+        >
+          <img data-region-image alt="{{ camera.stream_id }} 当前画面" hidden>
+          <div class="region-selection" data-region-selection hidden>
+            {% for handle in ('nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w') %}
+            <button
+              class="region-handle region-handle-{{ handle }}"
+              type="button"
+              data-region-handle="{{ handle }}"
+              aria-label="调整检测区域 {{ handle }}"
+            ></button>
+            {% endfor %}
+          </div>
+        </div>
+      </section>
+
+      <section class="region-fields-section" aria-labelledby="coordinates-title">
+        <h2 id="coordinates-title">区域坐标</h2>
+        <form method="post" action="/commands/camera-region" data-region-form>
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <input type="hidden" name="camera_id" value="{{ camera.stream_id }}">
+          <input type="hidden" name="x" value="{{ region_values.x }}" data-region-value="x">
+          <input type="hidden" name="y" value="{{ region_values.y }}" data-region-value="y">
+          <input
+            type="hidden"
+            name="width"
+            value="{{ region_values.width }}"
+            data-region-value="width"
+          >
+          <input
+            type="hidden"
+            name="height"
+            value="{{ region_values.height }}"
+            data-region-value="height"
+          >
+
+          <div class="region-fields">
+            {% for field, label in (('x', 'X'), ('y', 'Y'), ('width', '宽'), ('height', '高')) %}
+            <label>
+              <span>{{ label }} (%)</span>
+              <input
+                type="number"
+                inputmode="decimal"
+                step="0.01"
+                min="0"
+                max="100"
+                value="{{ region_display[field] }}"
+                data-region-input="{{ field }}"
+                aria-describedby="region-error"
+              >
+            </label>
+            {% endfor %}
+          </div>
+
+          <p
+            class="field-error"
+            id="region-error"
+            role="alert"
+            data-region-error
+            {% if not region_error %}hidden{% endif %}
+          >{{ region_error }}</p>
+          <p class="save-status" role="status" data-save-status>
+            {% if saved %}区域已保存{% endif %}
+          </p>
+
+          <div class="region-actions">
+            <button class="button secondary" type="button" data-reset-region>恢复全画面</button>
+            <div>
+              <a class="button secondary" href="/">取消</a>
+              <button class="button primary" type="submit" data-save-region disabled>保存</button>
+            </div>
+          </div>
+        </form>
+      </section>
+    </main>
+  </body>
+</html>

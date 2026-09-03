@@ -3,7 +3,7 @@ import hashlib
 import numpy as np
 import pytest
 
-from daihougou.vision.objects365_detector import (
+from guduck.vision.objects365_detector import (
     OBJECTS365_CATEGORIES,
     Objects365ObjectDetector,
 )

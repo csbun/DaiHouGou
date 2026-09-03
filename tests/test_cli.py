@@ -1,4 +1,4 @@
-from daihougou_poc.cli import build_parser
+from guduck_poc.cli import build_parser
 
 
 def test_cli_lists_required_command_groups() -> None:

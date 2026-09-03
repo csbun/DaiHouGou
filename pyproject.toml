@@ -3,7 +3,7 @@ requires = ["setuptools==80.9.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "daihougou-poc"
+name = "guduck"
 version = "0.2.0"
 requires-python = ">=3.12"
 dependencies = [
@@ -20,14 +20,14 @@ dependencies = [
 dev = ["httpx2==2.12.0", "pytest==9.0.2", "ruff==0.16.4"]
 
 [project.scripts]
-daihougou-poc = "daihougou_poc.cli:main"
-daihougou = "daihougou.main:run"
+guduck-poc = "guduck_poc.cli:main"
+guduck = "guduck.main:run"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
-daihougou = ["templates/*.html", "static/*.css", "static/*.js"]
+guduck = ["templates/*.html", "static/*.css", "static/*.js"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

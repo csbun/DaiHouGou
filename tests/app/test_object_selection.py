@@ -1,5 +1,5 @@
-from daihougou.object_selection import select_announced_objects
-from daihougou.vision.object_detector import DetectedObject, ObjectDetection
+from guduck.object_selection import select_announced_objects
+from guduck.vision.object_detector import DetectedObject, ObjectDetection
 
 
 def obj(label: str, confidence: float, box: tuple[int, int, int, int]) -> DetectedObject:

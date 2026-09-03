@@ -2,10 +2,10 @@ import asyncio
 import threading
 import time
 
-from daihougou.rules import OBJECT_RULE_ID, WELCOME_RULE_ID, SpeechAction
-from daihougou.speaker import SpeakResult
-from daihougou.speaker_worker import SpeakerManager
-from daihougou.storage import EventRecord
+from guduck.rules import OBJECT_RULE_ID, WELCOME_RULE_ID, SpeechAction
+from guduck.speaker import SpeakResult
+from guduck.speaker_worker import SpeakerManager
+from guduck.storage import EventRecord
 
 
 class FakeStorage:

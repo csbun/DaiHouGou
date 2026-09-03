@@ -5,14 +5,14 @@ from pathlib import Path
 
 import numpy as np
 
-from daihougou.camera_runtime import CameraRuntime
-from daihougou.object_rule import ObjectCategoryAnnouncementRule
-from daihougou.presence import PresenceTracker
-from daihougou.rules import WELCOME_RULE_ID, SpeechAction, WelcomeRule
-from daihougou.storage import Storage
-from daihougou.vision.frame_source import FrameSample
-from daihougou.vision.object_detector import ObjectDetection
-from daihougou.vision.person_detector import PersonDetection
+from guduck.camera_runtime import CameraRuntime
+from guduck.object_rule import ObjectCategoryAnnouncementRule
+from guduck.presence import PresenceTracker
+from guduck.rules import WELCOME_RULE_ID, SpeechAction, WelcomeRule
+from guduck.storage import Storage
+from guduck.vision.frame_source import FrameSample
+from guduck.vision.object_detector import ObjectDetection
+from guduck.vision.person_detector import PersonDetection
 
 
 class FakeFrameSource:

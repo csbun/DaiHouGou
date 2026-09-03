@@ -3,10 +3,10 @@ import threading
 
 import numpy as np
 
-from daihougou.detection_scheduler import DetectionScheduler, DetectorKind
-from daihougou.vision.frame_source import FrameSample
-from daihougou.vision.object_detector import ObjectDetection
-from daihougou.vision.person_detector import PersonDetection
+from guduck.detection_scheduler import DetectionScheduler, DetectorKind
+from guduck.vision.frame_source import FrameSample
+from guduck.vision.object_detector import ObjectDetection
+from guduck.vision.person_detector import PersonDetection
 
 
 def sample(sequence: int) -> FrameSample:

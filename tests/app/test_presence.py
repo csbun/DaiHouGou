@@ -1,6 +1,6 @@
 import pytest
 
-from daihougou.presence import PresenceEventKind, PresenceState, PresenceTracker
+from guduck.presence import PresenceEventKind, PresenceState, PresenceTracker
 
 
 def feed(tracker: PresenceTracker, values: list[tuple[float, bool]]):

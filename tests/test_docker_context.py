@@ -11,6 +11,7 @@ def test_docker_context_excludes_sensitive_and_generated_paths() -> None:
     assert {
         ".git",
         ".worktrees",
+        ".env",
         ".env.poc",
         ".env.mvp",
         ".venv",
@@ -31,13 +32,13 @@ def test_docker_context_excludes_sensitive_and_generated_paths() -> None:
 
 
 def test_go2rtc_does_not_replace_the_image_command_with_bare_flags() -> None:
-    compose = Path("compose.poc.yaml").read_text(encoding="utf-8")
+    compose = Path("compose.yaml").read_text(encoding="utf-8")
 
     assert 'command: ["-c", "/config/go2rtc.yaml"]' not in compose
 
 
 def test_probe_persists_miservice_token_in_private_home() -> None:
-    compose = Path("compose.poc.yaml").read_text(encoding="utf-8")
+    compose = Path("compose.yaml").read_text(encoding="utf-8")
 
-    assert "HOME: /var/lib/daihougou/mi" in compose
-    assert "./deploy/miservice/state:/var/lib/daihougou/mi" in compose
+    assert "HOME: /var/lib/guduck/mi" in compose
+    assert "./deploy/miservice/state:/var/lib/guduck/mi" in compose

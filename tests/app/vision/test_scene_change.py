@@ -1,6 +1,6 @@
 import numpy as np
 
-from daihougou.vision.scene_change import SceneChangeGate
+from guduck.vision.scene_change import SceneChangeGate
 
 
 def test_first_frame_changes_but_identical_second_frame_does_not() -> None:

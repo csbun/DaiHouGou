@@ -6,15 +6,15 @@ from urllib.parse import unquote
 
 import numpy as np
 
-from daihougou.detection_region import FULL_FRAME_REGION, DetectionRegion
-from daihougou.go2rtc import DiscoveryError
-from daihougou.rules import OBJECT_RULE_ID, WELCOME_RULE_ID, SpeechAction
-from daihougou.runtime import Runtime
-from daihougou.settings import ObjectDetectorAdapter, SpeakerConfig
-from daihougou.storage import EventRecord, Storage
-from daihougou.vision.frame_source import FrameSample
-from daihougou.vision.object_detector import ObjectDetection
-from daihougou.vision.person_detector import PersonDetection
+from guduck.detection_region import FULL_FRAME_REGION, DetectionRegion
+from guduck.go2rtc import DiscoveryError
+from guduck.rules import OBJECT_RULE_ID, WELCOME_RULE_ID, SpeechAction
+from guduck.runtime import Runtime
+from guduck.settings import ObjectDetectorAdapter, SpeakerConfig
+from guduck.storage import EventRecord, Storage
+from guduck.vision.frame_source import FrameSample
+from guduck.vision.object_detector import ObjectDetection
+from guduck.vision.person_detector import PersonDetection
 
 
 class FakeDiscovery:

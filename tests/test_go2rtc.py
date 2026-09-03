@@ -1,4 +1,4 @@
-from daihougou_poc.go2rtc import Go2RtcClient
+from guduck_poc.go2rtc import Go2RtcClient
 
 
 def test_stream_names_are_sorted() -> None:

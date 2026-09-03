@@ -5,7 +5,7 @@ import cv2
 import numpy as np
 import pytest
 
-from daihougou.camera_snapshot import (
+from guduck.camera_snapshot import (
     CameraSnapshotter,
     SnapshotUnavailable,
     build_snapshot_command,

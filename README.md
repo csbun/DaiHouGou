@@ -1,6 +1,8 @@
-# 大口九
+<h1 align="center">
+  <img src="docs/assets/guduck-logo.svg" alt="GuDuck" width="640">
+</h1>
 
-大口九是一个部署在家庭局域网内的儿童陪护应用。当前 MVP 通过 `go2rtc` 读取小米生态
+GuDuck 是一个部署在家庭局域网内的儿童陪护应用。它通过 `go2rtc` 读取小米生态
 摄像头的视频流，在本地检测“人员进入画面”事件或绘本画面中的通用物体，并通过小爱音箱
 播报结果。
 
@@ -25,7 +27,7 @@
 - 规则：每台摄像头可独立开启“人员进入欢迎”和“绘本物体播报”，共用固定配对音箱。新发现
   摄像头的两条规则均默认关闭。
 - 音箱控制：当前使用 MiService 调用小米服务，需要服务器能够访问互联网。Home Assistant
-  仅用于设备兼容性 PoC 的备选路径，不是运行 MVP 的依赖。
+  仅用于设备兼容性 PoC 的备选路径，不是 GuDuck 的运行依赖。
 
 ## 运行要求
 
@@ -61,25 +63,30 @@ chmod 700 deploy/app/state deploy/miservice/state
 test -e deploy/go2rtc/state/go2rtc.yaml || \
   cp deploy/go2rtc/go2rtc.example.yaml deploy/go2rtc/state/go2rtc.yaml
 test -e .env.poc || cp .env.poc.example .env.poc
-test -e .env.mvp || cp .env.mvp.example .env.mvp
-chmod 600 .env.poc .env.mvp
+test -e .env || cp .env.example .env
+chmod 600 .env.poc .env
 ```
 
 这些本地环境文件和状态目录已被 Git 及 Docker 构建上下文忽略。不要提交其中的账号、密码、
 Token、DID、局域网地址或完整 `xiaomi://` 地址。
 
-从旧的单摄像头版本升级时，新版本不迁移旧 SQLite 结构。必须先停止 app，并按运行手册
-“14.1 升级前备份并重置旧数据库”把旧数据库移动到
-`backup-before-multicamera-日期时间` 目录；旧 app 在新镜像部署完成前保持停止。
+从现有多摄像头版本升级时，按运行手册先用旧版 Compose 文件停止 app；拉取新代码后，从
+`.env.example` 新建 `.env`，再人工迁移账号、音箱和网络等配置值。不要整份复制旧
+`.env.mvp`，否则其中的旧容器路径会绕过新版挂载。GuDuck 首次启动会把
+`deploy/app/state/daihougou.db` 及其 WAL/SHM 文件自动改名为 `guduck.db`，数据库内容和
+schema 不变。不要让新旧 app 同时访问该目录。
+
+从更早的单摄像头版本升级时，新版本不迁移旧 SQLite 结构。必须按运行手册“14.1 升级前
+停止与数据库迁移”先备份并移走旧数据库，再启动 GuDuck。
 
 ## 配置摄像头
 
 ### 1. 启动 go2rtc
 
 ```bash
-docker compose -f compose.poc.yaml up -d go2rtc
-docker compose -f compose.poc.yaml ps go2rtc
-docker compose -f compose.poc.yaml logs --tail=20 go2rtc
+docker compose up -d go2rtc
+docker compose ps go2rtc
+docker compose logs --tail=20 go2rtc
 curl --fail --show-error http://127.0.0.1:1984/api
 ```
 
@@ -98,7 +105,7 @@ ssh -L 1984:127.0.0.1:1984 SERVER_USER@SERVER_IP
 确认目标摄像头：
 
 1. 为每台摄像头设置稳定且唯一的流名称，例如 `xiaobai`、`xiaobai_25k`。该名称会原样显示
-   在大口九管理页中，应用内不能改名。
+   在 GuDuck 管理页中，应用内不能改名。
 2. 保留页面自动生成的完整 `xiaomi://` 源地址，不要手工重写账号、Token、DID、型号或 IP。
 3. 优先在源地址查询参数中使用 `subtype=sd`，保存后连续预览至少 30 秒。
 4. 如果 `sd` 不稳定，依次尝试 `auto`、`1`、`2`，选择码率最低且可以持续更新的码流。
@@ -112,7 +119,7 @@ curl --fail --silent --show-error http://127.0.0.1:1984/api/streams \
   | python3 -m json.tool
 ```
 
-输出中必须出现准备接入大口九的每个流名称。摄像头也必须已通电、开机，并在米家 App 中
+输出中必须出现准备接入 GuDuck 的每个流名称。摄像头也必须已通电、开机，并在米家 App 中
 显示在线。应用只会在启动时和人工点击“刷新摄像头”时读取这份列表，不会后台轮询。
 
 ## 配置小爱音箱
@@ -131,8 +138,8 @@ MI_DID=
 并查询账号下的设备：
 
 ```bash
-docker compose -f compose.poc.yaml --profile tools build probe
-docker compose -f compose.poc.yaml --profile tools run --rm \
+docker compose --profile tools build probe
+docker compose --profile tools run --rm \
   --entrypoint python probe -m miservice list
 ```
 
@@ -158,13 +165,13 @@ sudo stat -c '%a %n' deploy/miservice/state deploy/miservice/state/.mi.token
 再次执行设备查询；正常情况下不再要求验证码：
 
 ```bash
-docker compose -f compose.poc.yaml --profile tools run --rm \
+docker compose --profile tools run --rm \
   --entrypoint python probe -m miservice list
 ```
 
 ## 配置应用
 
-编辑 `.env.mvp`，至少填写以下内容：
+编辑 `.env`，至少填写以下内容：
 
 ```dotenv
 MI_USER='小米账号'
@@ -190,10 +197,10 @@ ip -4 -brief address
 
 | 环境变量 | 默认值 | 说明 |
 | --- | --- | --- |
-| `DATA_DIR` | `/var/lib/daihougou/data` | SQLite 状态目录 |
-| `MODEL` | `/opt/daihougou/models/person_detection_mediapipe_2023mar.onnx` | 人员检测模型 |
-| `OBJECT_MODEL` | `/opt/daihougou/models/object_detection_nanodet_2022nov.onnx` | 绘本物体检测模型 |
-| `OBJECTS365_MODEL` | `/opt/daihougou/models/custom/object_detection_objects365_yolo26n_416.onnx` | Objects365 ONNX 模型 |
+| `DATA_DIR` | `/var/lib/guduck/data` | SQLite 状态目录 |
+| `MODEL` | `/opt/guduck/models/person_detection_mediapipe_2023mar.onnx` | 人员检测模型 |
+| `OBJECT_MODEL` | `/opt/guduck/models/object_detection_nanodet_2022nov.onnx` | 绘本物体检测模型 |
+| `OBJECTS365_MODEL` | `/opt/guduck/models/custom/object_detection_objects365_yolo26n_416.onnx` | Objects365 ONNX 模型 |
 | `DETECTION_FPS` | `1.0` | 每秒检测帧数 |
 | `PERSON_THRESHOLD` | `0.55` | 人员检测置信度阈值，范围为 0 到 1 |
 | `LEAVE_SECONDS` | `10.0` | 连续无人多久后判定人员离开 |
@@ -201,13 +208,13 @@ ip -4 -brief address
 
 ## 启动应用
 
-构建应用镜像并启动 go2rtc 与大口九：
+构建应用镜像并启动 go2rtc 与 GuDuck：
 
 ```bash
-docker compose -f compose.poc.yaml build app
-docker compose -f compose.poc.yaml up -d go2rtc app
-docker compose -f compose.poc.yaml ps go2rtc app
-docker compose -f compose.poc.yaml logs --tail=50 app
+docker compose build app
+docker compose up -d go2rtc app
+docker compose ps go2rtc app
+docker compose logs --tail=50 app
 ```
 
 首次构建会下载 Python 依赖和人员检测模型，需要能够访问互联网。应用首次启动加载模型并等待
@@ -216,7 +223,7 @@ docker compose -f compose.poc.yaml logs --tail=50 app
 等待约 60 秒后检查健康状态：
 
 ```bash
-server_lan_ip=$(sed -n 's/^WEB_HOST=//p' .env.mvp)
+server_lan_ip=$(sed -n 's/^WEB_HOST=//p' .env)
 curl --fail --silent --show-error "http://${server_lan_ip}:8080/healthz" \
   | python3 -m json.tool
 ```
@@ -264,28 +271,28 @@ http://SERVER_IP:8080/
 查看状态和日志：
 
 ```bash
-docker compose -f compose.poc.yaml ps go2rtc app
-docker compose -f compose.poc.yaml logs --tail=100 go2rtc app
+docker compose ps go2rtc app
+docker compose logs --tail=100 go2rtc app
 ```
 
 重启应用：
 
 ```bash
-docker compose -f compose.poc.yaml restart app
+docker compose restart app
 ```
 
 停止应用但保留 go2rtc：
 
 ```bash
-docker compose -f compose.poc.yaml stop app
+docker compose stop app
 ```
 
 升级代码后重建应用，数据库、摄像头配置、音箱配对和 MiService Token 会保留在宿主机：
 
 ```bash
 git pull --ff-only
-docker compose -f compose.poc.yaml build app
-docker compose -f compose.poc.yaml up -d app
+docker compose build app
+docker compose up -d app
 ```
 
 如果管理页显示音箱认证需要重新登录，重新运行一次交互式 `miservice list`，完成验证码验证后
@@ -293,22 +300,40 @@ docker compose -f compose.poc.yaml up -d app
 
 ```bash
 sudo chmod 600 deploy/miservice/state/.mi.token
-docker compose -f compose.poc.yaml restart app
+docker compose restart app
 ```
 
 ## 数据与安全
 
 - 管理页无账号认证，只应在可信局域网中使用。
 - 不要通过路由器转发 `8080`、`1984` 或 `8554` 端口。
-- 不要提交 `.env.poc`、`.env.mvp`、`deploy/*/state/` 或 `artifacts/`。
+- 不要提交 `.env.poc`、`.env`、`deploy/*/state/` 或 `artifacts/`。
 - 应用不持久化图片、视频或音频；`deploy/app/state/` 只保存 SQLite 规则状态与事件记录。
 - 音箱 DID 只保存在私有环境文件中，不会显示在管理页、状态接口或事件记录中。
 - MiService 直连不经过 Home Assistant，但仍会通过互联网调用小米服务。
 
+## 本地开发
+
+从旧版 editable installation 升级时，先卸载旧 distribution，避免虚拟环境中残留失效的
+`daihougou` 命令，再安装 GuDuck：
+
+```bash
+.venv/bin/pip uninstall -y daihougou
+.venv/bin/pip install -e '.[dev]'
+```
+
+新环境只需执行第二条命令。运行 Python、JavaScript 与静态检查：
+
+```bash
+.venv/bin/pytest -q
+node --test tests/js/region-editor.test.js
+.venv/bin/ruff check .
+```
+
 ## 详细运行手册
 
 摄像头码流验证、音箱单次试播、稳定性测试、认证故障处理和完整验收步骤见
-[设备兼容性 PoC 与 MVP 运行手册](docs/poc-runbook.md)。
+[设备兼容性 PoC 与 GuDuck 运行手册](docs/poc-runbook.md)。
 
 通用物体识别的本地语料准备、Objects365 导出、物品单模型门禁和可选双摄联调见
 [通用物体识别 PoC 运行手册](docs/object-category-detection-poc-runbook.md)。

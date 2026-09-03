@@ -1,7 +1,11 @@
 .worktrees/
 .venv/
 *.egg-info/
+build/
+dist/
+.env
 .env.poc
+# Keep legacy secret files ignored during the GuDuck transition.
 .env.mvp
 artifacts/
 config/poc-devices.json
