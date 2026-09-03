@@ -157,7 +157,9 @@ def test_detector_kinds_load_independently_and_are_serialized() -> None:
         def person_factory() -> object:
             nonlocal person_created
             person_created += 1
-            return type("Person", (), {"detect": lambda self, frame: PersonDetection(False, 0.1, 1)})()
+            return type(
+                "Person", (), {"detect": lambda self, frame: PersonDetection(False, 0.1, 1)}
+            )()
 
         def object_factory() -> ObjectDetector:
             nonlocal object_created
@@ -172,6 +174,98 @@ def test_detector_kinds_load_independently_and_are_serialized() -> None:
         assert object_created == 1
         assert scheduler.snapshot(DetectorKind.PERSON).loaded is True
         assert scheduler.snapshot(DetectorKind.OBJECT).loaded is True
+        await scheduler.close()
+
+    asyncio.run(scenario())
+
+
+def test_replacing_loaded_object_detector_waits_for_current_inference() -> None:
+    class BlockingObjectDetector:
+        def __init__(self) -> None:
+            self.entered = threading.Event()
+            self.release = threading.Event()
+
+        def detect(self, frame: np.ndarray) -> ObjectDetection:
+            self.entered.set()
+            assert self.release.wait(2)
+            return ObjectDetection((), 1)
+
+    class ReplacementObjectDetector:
+        def detect(self, frame: np.ndarray) -> ObjectDetection:
+            return ObjectDetection((), 2)
+
+    async def scenario() -> None:
+        current = BlockingObjectDetector()
+        replacement = ReplacementObjectDetector()
+        scheduler = DetectionScheduler(lambda: object(), lambda: current)
+        await scheduler.enable(DetectorKind.OBJECT)
+
+        active = asyncio.create_task(scheduler.detect_objects("front", sample(1)))
+        assert await asyncio.to_thread(current.entered.wait, 2)
+        replacing = asyncio.create_task(
+            scheduler.replace_factory(DetectorKind.OBJECT, lambda: replacement)
+        )
+        await asyncio.sleep(0.01)
+        assert replacing.done() is False
+
+        current.release.set()
+        assert (await active).latency_ms == 1
+        await replacing
+        assert (await scheduler.detect_objects("front", sample(2))).latency_ms == 2
+        await scheduler.close()
+
+    asyncio.run(scenario())
+
+
+def test_failed_object_detector_replacement_keeps_current_detector_ready() -> None:
+    class CurrentObjectDetector:
+        def detect(self, frame: np.ndarray) -> ObjectDetection:
+            return ObjectDetection((), 7)
+
+    def broken_factory() -> object:
+        raise ValueError("private model path")
+
+    async def scenario() -> None:
+        scheduler = DetectionScheduler(lambda: object(), CurrentObjectDetector)
+        await scheduler.enable(DetectorKind.OBJECT)
+
+        try:
+            await scheduler.replace_factory(DetectorKind.OBJECT, broken_factory)
+        except RuntimeError as error:
+            assert str(error) == "detector_replace_failed:object"
+        else:
+            raise AssertionError("broken replacement was accepted")
+
+        assert scheduler.snapshot(DetectorKind.OBJECT).status == "ready"
+        result = await scheduler.detect_objects("front", sample(1))
+        assert result.latency_ms == 7
+        await scheduler.close()
+
+    asyncio.run(scenario())
+
+
+def test_replacing_stopped_object_detector_updates_the_next_factory() -> None:
+    class ReplacementObjectDetector:
+        def detect(self, frame: np.ndarray) -> ObjectDetection:
+            return ObjectDetection((), 11)
+
+    async def scenario() -> None:
+        created = 0
+
+        def replacement_factory() -> ReplacementObjectDetector:
+            nonlocal created
+            created += 1
+            return ReplacementObjectDetector()
+
+        scheduler = DetectionScheduler(lambda: object(), lambda: object())
+        await scheduler.replace_factory(DetectorKind.OBJECT, replacement_factory)
+        assert scheduler.snapshot(DetectorKind.OBJECT).status == "stopped"
+
+        await scheduler.enable(DetectorKind.OBJECT)
+        result = await scheduler.detect_objects("front", sample(1))
+
+        assert result.latency_ms == 11
+        assert created == 2
         await scheduler.close()
 
     asyncio.run(scenario())

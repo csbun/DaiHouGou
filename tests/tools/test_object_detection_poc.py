@@ -16,7 +16,11 @@ from tools.object_detection_poc import (
 
 
 def write_corpus(
-    tmp_path: Path, *, expected: tuple[str, ...] = ("cat",), expected_on_all_pages: bool = False
+    tmp_path: Path,
+    *,
+    primary: str = "cat",
+    expected: tuple[str, ...] = ("cat",),
+    expected_on_all_pages: bool = False,
 ) -> Path:
     corpus = tmp_path / "private-corpus"
     corpus.mkdir()
@@ -27,7 +31,7 @@ def write_corpus(
         pages.append(
             {
                 "file": filename,
-                "primary": "cat" if index < 20 else None,
+                "primary": primary if index < 20 else None,
                 "expected": list(expected) if index < 20 or expected_on_all_pages else [],
             }
         )
@@ -65,7 +69,9 @@ def test_manifest_rejects_invalid_page_data_that_could_escape_the_private_corpus
         load_manifest(path)
 
 
-def test_manifest_rejects_duplicate_files_and_fewer_than_twenty_primary_pages(tmp_path: Path) -> None:
+def test_manifest_rejects_duplicate_files_and_fewer_than_twenty_primary_pages(
+    tmp_path: Path,
+) -> None:
     corpus = write_corpus(tmp_path, expected_on_all_pages=True)
     pages = json.loads((corpus / "manifest.json").read_text(encoding="utf-8"))["pages"]
     pages[1]["file"] = pages[0]["file"]
@@ -159,7 +165,9 @@ def test_evaluate_returns_failed_gate_for_each_measured_threshold() -> None:
     assert report["passed"] is False
 
 
-def test_peak_rss_converts_darwin_bytes_and_linux_kibibytes(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_peak_rss_converts_darwin_bytes_and_linux_kibibytes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     class Usage:
         ru_maxrss = 321
 
@@ -176,7 +184,10 @@ def test_main_returns_two_for_invalid_inputs_without_a_traceback(
 ) -> None:
     missing = tmp_path / "missing"
 
-    assert main(["--corpus", str(missing), "--object-model", "missing", "--person-model", "missing"]) == 2
+    assert (
+        main(["--corpus", str(missing), "--object-model", "missing", "--person-model", "missing"])
+        == 2
+    )
 
     captured = capsys.readouterr()
     assert captured.out == ""
@@ -193,16 +204,19 @@ def test_main_rejects_two_cameras_without_a_person_model(
     object_model = tmp_path / "object.onnx"
     object_model.write_bytes(b"model")
 
-    assert main(
-        [
-            "--corpus",
-            str(corpus),
-            "--object-model",
-            str(object_model),
-            "--camera-count",
-            "2",
-        ]
-    ) == 2
+    assert (
+        main(
+            [
+                "--corpus",
+                str(corpus),
+                "--object-model",
+                str(object_model),
+                "--camera-count",
+                "2",
+            ]
+        )
+        == 2
+    )
 
     captured = capsys.readouterr()
     assert captured.out == ""
@@ -222,16 +236,19 @@ def test_main_rejects_corpus_outside_fixed_private_directory(
         lambda _: (_ for _ in ()).throw(AssertionError("manifest must not be read")),
     )
 
-    assert main(
-        [
-            "--corpus",
-            str(corpus),
-            "--object-model",
-            str(object_model),
-            "--person-model",
-            str(person_model),
-        ]
-    ) == 2
+    assert (
+        main(
+            [
+                "--corpus",
+                str(corpus),
+                "--object-model",
+                str(object_model),
+                "--person-model",
+                str(person_model),
+            ]
+        )
+        == 2
+    )
 
     assert capsys.readouterr().out == ""
 
@@ -253,23 +270,24 @@ def test_main_accepts_a_fixed_validation_directory_that_resolves_through_a_symli
             pass
 
         def detect(self, _: np.ndarray) -> ObjectDetection:
-            return ObjectDetection(
-                (DetectedObject("cat", 0.9, 0, 0, 10, 10),), latency_ms=7
-            )
+            return ObjectDetection((DetectedObject("cat", 0.9, 0, 0, 10, 10),), latency_ms=7)
 
     monkeypatch.setattr("tools.object_detection_poc.VALIDATION_CORPUS", corpus.resolve())
     monkeypatch.setattr("tools.object_detection_poc.cv2.imread", lambda _: frame)
     monkeypatch.setattr("tools.object_detection_poc.ObjectDetector", FakeObjectDetector)
     monkeypatch.setattr("tools.object_detection_poc.peak_rss_bytes", lambda: 123)
 
-    assert main(
-        [
-            "--corpus",
-            str(corpus_alias),
-            "--object-model",
-            str(object_model),
-        ]
-    ) == 0
+    assert (
+        main(
+            [
+                "--corpus",
+                str(corpus_alias),
+                "--object-model",
+                str(object_model),
+            ]
+        )
+        == 0
+    )
 
     assert json.loads(capsys.readouterr().out)["passed"] is True
 
@@ -285,7 +303,19 @@ def test_main_returns_two_when_a_manifest_image_cannot_be_read(
     person_model.write_bytes(b"model")
     monkeypatch.setattr("tools.object_detection_poc.cv2.imread", lambda _: None)
 
-    assert main(["--corpus", str(corpus), "--object-model", str(object_model), "--person-model", str(person_model)]) == 2
+    assert (
+        main(
+            [
+                "--corpus",
+                str(corpus),
+                "--object-model",
+                str(object_model),
+                "--person-model",
+                str(person_model),
+            ]
+        )
+        == 2
+    )
 
     captured = capsys.readouterr()
     assert captured.out == ""
@@ -354,20 +384,23 @@ def test_main_warms_models_measures_pages_and_runs_serialized_two_camera_cycles(
     monkeypatch.setattr("tools.object_detection_poc.PersonDetector", FakePersonDetector)
     monkeypatch.setattr("tools.object_detection_poc.peak_rss_bytes", lambda: 123)
 
-    assert main(
-        [
-            "--corpus",
-            str(corpus),
-            "--object-model",
-            str(object_model),
-            "--person-model",
-            str(person_model),
-            "--camera-count",
-            "2",
-            "--output",
-            str(output),
-        ]
-    ) == 0
+    assert (
+        main(
+            [
+                "--corpus",
+                str(corpus),
+                "--object-model",
+                str(object_model),
+                "--person-model",
+                str(person_model),
+                "--camera-count",
+                "2",
+                "--output",
+                str(output),
+            ]
+        )
+        == 0
+    )
 
     report = json.loads(capsys.readouterr().out)
     assert report["page_count"] == 30
@@ -379,7 +412,10 @@ def test_main_warms_models_measures_pages_and_runs_serialized_two_camera_cycles(
     assert trace[:6] == ["object", "object", "object", "person", "person", "person"]
     assert trace[6:36] == ["object"] * 30
     assert len(trace) == 156
-    assert all(trace[index : index + 4] == ["person", "object", "person", "object"] for index in range(36, 156, 4))
+    assert all(
+        trace[index : index + 4] == ["person", "object", "person", "object"]
+        for index in range(36, 156, 4)
+    )
     assert len(selection_accesses) == 93
     assert maximum_live_frames <= 1
     assert read_count == 61
@@ -406,9 +442,7 @@ def test_main_defaults_to_object_only_without_loading_person_model(
         def detect(self, _: np.ndarray) -> ObjectDetection:
             nonlocal object_calls
             object_calls += 1
-            return ObjectDetection(
-                (DetectedObject("cat", 0.9, 0, 0, 10, 10),), latency_ms=7
-            )
+            return ObjectDetection((DetectedObject("cat", 0.9, 0, 0, 10, 10),), latency_ms=7)
 
     class UnexpectedPersonDetector:
         def __init__(self, _: Path) -> None:
@@ -419,20 +453,77 @@ def test_main_defaults_to_object_only_without_loading_person_model(
     monkeypatch.setattr("tools.object_detection_poc.PersonDetector", UnexpectedPersonDetector)
     monkeypatch.setattr("tools.object_detection_poc.peak_rss_bytes", lambda: 123)
 
-    assert main(
-        [
-            "--corpus",
-            str(corpus),
-            "--object-model",
-            str(object_model),
-        ]
-    ) == 0
+    assert (
+        main(
+            [
+                "--corpus",
+                str(corpus),
+                "--object-model",
+                str(object_model),
+            ]
+        )
+        == 0
+    )
 
     report = json.loads(capsys.readouterr().out)
     assert report["page_count"] == 30
     assert report["primary_accuracy"] == 1.0
     assert "cycle_p95_ms" not in report
     assert object_calls == 33
+
+
+def test_main_uses_objects365_adapter_and_vocabulary_when_selected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from daihougou.vision.object_detector import DetectedObject, ObjectDetection
+
+    corpus = write_corpus(
+        tmp_path,
+        primary="rabbit",
+        expected=("rabbit",),
+        expected_on_all_pages=True,
+    )
+    monkeypatch.setattr("tools.object_detection_poc.VALIDATION_CORPUS", corpus.resolve())
+    object_model = tmp_path / "objects365.onnx"
+    object_model.write_bytes(b"model")
+    frame = np.zeros((100, 100, 3), dtype=np.uint8)
+
+    class FakeObjects365Detector:
+        def __init__(self, model: Path) -> None:
+            assert model == object_model
+
+        def detect(self, _: np.ndarray) -> ObjectDetection:
+            return ObjectDetection((DetectedObject("rabbit", 0.9, 0, 0, 10, 10),), latency_ms=7)
+
+    class UnexpectedNanoDet:
+        def __init__(self, _: Path) -> None:
+            raise AssertionError("NanoDet must not load")
+
+    monkeypatch.setattr("tools.object_detection_poc.cv2.imread", lambda _: frame)
+    monkeypatch.setattr(
+        "tools.object_detection_poc.Objects365ObjectDetector",
+        FakeObjects365Detector,
+    )
+    monkeypatch.setattr("tools.object_detection_poc.ObjectDetector", UnexpectedNanoDet)
+    monkeypatch.setattr("tools.object_detection_poc.peak_rss_bytes", lambda: 123)
+
+    assert (
+        main(
+            [
+                "--corpus",
+                str(corpus),
+                "--object-model",
+                str(object_model),
+                "--adapter",
+                "objects365",
+            ]
+        )
+        == 0
+    )
+
+    report = json.loads(capsys.readouterr().out)
+    assert report["adapter"] == "objects365"
+    assert report["primary_accuracy"] == 1.0
 
 
 def test_main_returns_one_for_a_measured_gate_failure(
@@ -468,6 +559,18 @@ def test_main_returns_one_for_a_measured_gate_failure(
     monkeypatch.setattr("tools.object_detection_poc.PersonDetector", FakePersonDetector)
     monkeypatch.setattr("tools.object_detection_poc.peak_rss_bytes", lambda: 1)
 
-    assert main(["--corpus", str(corpus), "--object-model", str(object_model), "--person-model", str(person_model)]) == 1
+    assert (
+        main(
+            [
+                "--corpus",
+                str(corpus),
+                "--object-model",
+                str(object_model),
+                "--person-model",
+                str(person_model),
+            ]
+        )
+        == 1
+    )
 
     assert json.loads(capsys.readouterr().out)["passed"] is False

@@ -2,10 +2,16 @@ import json
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
 SPEAKER_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+
+
+class ObjectDetectorAdapter(StrEnum):
+    NANODET = "nanodet"
+    OBJECTS365 = "objects365"
 
 
 @dataclass(frozen=True)
@@ -82,6 +88,9 @@ class Settings:
     data_dir: Path = Path("/var/lib/daihougou/data")
     model: Path = Path("/opt/daihougou/models/person_detection_mediapipe_2023mar.onnx")
     object_model: Path = Path("/opt/daihougou/models/object_detection_nanodet_2022nov.onnx")
+    objects365_model: Path = Path(
+        "/opt/daihougou/models/custom/object_detection_objects365_yolo26n_416.onnx"
+    )
     detection_fps: float = 1.0
     person_threshold: float = 0.55
     leave_seconds: float = 10.0
@@ -115,9 +124,7 @@ class Settings:
             mi_pass=_required(mapping, "MI_PASS"),
             speakers=_speaker_catalog(mapping.get("MI_SPEAKERS_JSON", "")),
             go2rtc_api_url=mapping.get("GO2RTC_API_URL", "http://127.0.0.1:1984"),
-            go2rtc_rtsp_base_url=mapping.get(
-                "GO2RTC_RTSP_BASE_URL", "rtsp://127.0.0.1:8554"
-            ),
+            go2rtc_rtsp_base_url=mapping.get("GO2RTC_RTSP_BASE_URL", "rtsp://127.0.0.1:8554"),
             data_dir=Path(mapping.get("DATA_DIR", "/var/lib/daihougou/data")),
             model=Path(
                 mapping.get(
@@ -131,12 +138,16 @@ class Settings:
                     "/opt/daihougou/models/object_detection_nanodet_2022nov.onnx",
                 )
             ),
+            objects365_model=Path(
+                mapping.get(
+                    "OBJECTS365_MODEL",
+                    "/opt/daihougou/models/custom/object_detection_objects365_yolo26n_416.onnx",
+                )
+            ),
             detection_fps=_positive_float(mapping, "DETECTION_FPS", 1.0),
             person_threshold=person_threshold,
             leave_seconds=_positive_float(mapping, "LEAVE_SECONDS", 10.0),
-            welcome_cooldown_seconds=_positive_float(
-                mapping, "WELCOME_COOLDOWN_SECONDS", 60.0
-            ),
+            welcome_cooldown_seconds=_positive_float(mapping, "WELCOME_COOLDOWN_SECONDS", 60.0),
             web_host=mapping.get("WEB_HOST", "0.0.0.0"),
             web_port=web_port,
         )

@@ -16,9 +16,10 @@ from fastapi.templating import Jinja2Templates
 
 from daihougou.camera_snapshot import SnapshotUnavailable
 from daihougou.detection_region import DetectionRegion
-from daihougou.object_catalog import SUPPORTED_CATEGORY_NAMES
+from daihougou.object_catalog import COCO_CATEGORY_NAMES, OBJECTS365_CATEGORY_NAMES
 from daihougou.rules import BUILTIN_RULE_IDS
-from daihougou.runtime import CameraView, RuntimeSnapshot
+from daihougou.runtime import CameraView, ObjectDetectorOption, RuntimeSnapshot
+from daihougou.settings import ObjectDetectorAdapter
 
 PACKAGE_DIR = Path(__file__).parent
 
@@ -30,9 +31,7 @@ class ManagedRuntime(Protocol):
 
     async def refresh_cameras(self) -> None: ...
 
-    async def set_rule_enabled(
-        self, camera_id: str, rule_id: str, enabled: bool
-    ) -> None: ...
+    async def set_rule_enabled(self, camera_id: str, rule_id: str, enabled: bool) -> None: ...
 
     async def set_camera_speaker(self, camera_id: str, speaker_id: str) -> None: ...
 
@@ -46,12 +45,14 @@ class ManagedRuntime(Protocol):
 
     def set_welcome_phrases(self, lines: list[str]) -> tuple[str, ...]: ...
 
+    def object_detector_options(self) -> tuple[ObjectDetectorOption, ...]: ...
+
+    async def set_object_detector_adapter(self, adapter: ObjectDetectorAdapter) -> None: ...
+
     def snapshot(self) -> RuntimeSnapshot: ...
 
 
-def _verify_write_request(
-    request: Request, form_token: str, expected_token: str
-) -> None:
+def _verify_write_request(request: Request, form_token: str, expected_token: str) -> None:
     origin = request.headers.get("origin", "")
     host = request.headers.get("host", "")
     cookie = request.cookies.get("daihougou_csrf", "")
@@ -74,7 +75,10 @@ def _phrase_error(error: ValueError) -> str:
     return "欢迎词格式无效"
 
 
-def create_app(runtime: ManagedRuntime, csrf_token: str | None = None) -> FastAPI:
+def create_app(
+    runtime: ManagedRuntime,
+    csrf_token: str | None = None,
+) -> FastAPI:
     token = csrf_token or secrets.token_urlsafe(32)
     templates = Jinja2Templates(directory=PACKAGE_DIR / "templates")
     snapshot_ready_at: dict[str, float] = {}
@@ -102,7 +106,6 @@ def create_app(runtime: ManagedRuntime, csrf_token: str | None = None) -> FastAP
                 "snapshot": snapshot,
                 "csrf_token": token,
                 "active_tab": "status",
-                "supported_categories": tuple(SUPPORTED_CATEGORY_NAMES.items()),
                 "camera_region_urls": {
                     camera.stream_id: f"/camera-region?{urlencode({'camera_id': camera.stream_id})}"
                     for camera in snapshot.cameras
@@ -113,11 +116,7 @@ def create_app(runtime: ManagedRuntime, csrf_token: str | None = None) -> FastAP
 
     def find_camera(camera_id: str) -> CameraView:
         camera = next(
-            (
-                item
-                for item in runtime.snapshot().cameras
-                if item.stream_id == camera_id
-            ),
+            (item for item in runtime.snapshot().cameras if item.stream_id == camera_id),
             None,
         )
         if camera is None:
@@ -133,17 +132,12 @@ def create_app(runtime: ManagedRuntime, csrf_token: str | None = None) -> FastAP
         saved: bool = False,
         status_code: int = 200,
     ) -> HTMLResponse:
-        resolved_region: DetectionRegion | dict[str, str] = (
-            region or camera.detection_region
-        )
+        resolved_region: DetectionRegion | dict[str, str] = region or camera.detection_region
         fields = ("x", "y", "width", "height")
         if isinstance(resolved_region, DetectionRegion):
-            region_values = {
-                field: f"{getattr(resolved_region, field):.6f}" for field in fields
-            }
+            region_values = {field: f"{getattr(resolved_region, field):.6f}" for field in fields}
             region_display = {
-                field: f"{getattr(resolved_region, field) * 100:.2f}"
-                for field in fields
+                field: f"{getattr(resolved_region, field) * 100:.2f}" for field in fields
             }
         else:
             region_values = resolved_region
@@ -177,8 +171,22 @@ def create_app(runtime: ManagedRuntime, csrf_token: str | None = None) -> FastAP
         *,
         phrases_text: str | None = None,
         phrase_error: str = "",
+        object_detector_error: str = "",
         status_code: int = 200,
     ) -> HTMLResponse:
+        object_detector_options = runtime.object_detector_options()
+        selected_adapter = next(
+            option.adapter for option in object_detector_options if option.selected
+        )
+        supported_category_names = (
+            OBJECTS365_CATEGORY_NAMES
+            if selected_adapter is ObjectDetectorAdapter.OBJECTS365
+            else COCO_CATEGORY_NAMES
+        )
+        object_detector_names = {
+            ObjectDetectorAdapter.NANODET: "NanoDet COCO",
+            ObjectDetectorAdapter.OBJECTS365: "Objects365 YOLO26n",
+        }
         response = templates.TemplateResponse(
             request=request,
             name="settings.html",
@@ -190,9 +198,20 @@ def create_app(runtime: ManagedRuntime, csrf_token: str | None = None) -> FastAP
                     else "\n".join(runtime.welcome_phrases())
                 ),
                 "phrase_error": phrase_error,
+                "object_detector_error": object_detector_error,
                 "csrf_token": token,
                 "active_tab": "settings",
-                "supported_categories": tuple(SUPPORTED_CATEGORY_NAMES.items()),
+                "object_detector_options": tuple(
+                    {
+                        "value": option.adapter.value,
+                        "name": object_detector_names[option.adapter],
+                        "available": option.available,
+                        "selected": option.selected,
+                    }
+                    for option in object_detector_options
+                ),
+                "supported_category_count": len(supported_category_names),
+                "supported_categories": tuple(supported_category_names.items()),
             },
             status_code=status_code,
         )
@@ -284,9 +303,7 @@ def create_app(runtime: ManagedRuntime, csrf_token: str | None = None) -> FastAP
             raise
         if "application/json" in request.headers.get("accept", ""):
             snapshot = runtime.snapshot()
-            camera = next(
-                camera for camera in snapshot.cameras if camera.stream_id == camera_id
-            )
+            camera = next(camera for camera in snapshot.cameras if camera.stream_id == camera_id)
             return JSONResponse(
                 {
                     "camera": camera.health_dict(),
@@ -355,9 +372,7 @@ def create_app(runtime: ManagedRuntime, csrf_token: str | None = None) -> FastAP
             region = DetectionRegion(float(x), float(y), float(width), float(height))
         except (TypeError, ValueError, OverflowError):
             if wants_json:
-                raise HTTPException(
-                    status_code=422, detail="invalid_detection_region"
-                ) from None
+                raise HTTPException(status_code=422, detail="invalid_detection_region") from None
             return render_camera_region(
                 request,
                 camera,
@@ -373,9 +388,7 @@ def create_app(runtime: ManagedRuntime, csrf_token: str | None = None) -> FastAP
         )
         if not region.is_full_frame and not has_current_snapshot:
             if wants_json:
-                raise HTTPException(
-                    status_code=409, detail="camera_snapshot_required"
-                )
+                raise HTTPException(status_code=409, detail="camera_snapshot_required")
             return render_camera_region(
                 request,
                 camera,
@@ -423,6 +436,36 @@ def create_app(runtime: ManagedRuntime, csrf_token: str | None = None) -> FastAP
                 request,
                 phrases_text=phrases,
                 phrase_error=_phrase_error(error),
+                status_code=422,
+            )
+        return RedirectResponse("/settings", status_code=303)
+
+    @app.post("/commands/object-detector-adapter", response_class=HTMLResponse)
+    async def update_object_detector_adapter(
+        request: Request,
+        csrf_token: str = Form(default=""),
+        adapter: str = Form(default=""),
+    ) -> Response:
+        _verify_write_request(request, csrf_token, token)
+        try:
+            selected = ObjectDetectorAdapter(adapter)
+        except ValueError:
+            return render_settings(
+                request,
+                object_detector_error="检测器选项无效。",
+                status_code=422,
+            )
+        try:
+            await runtime.set_object_detector_adapter(selected)
+        except RuntimeError as error:
+            message = (
+                "模型文件不可用，请先完成部署。"
+                if str(error) == "object_detector_unavailable"
+                else "模型加载失败，已继续使用原检测器。"
+            )
+            return render_settings(
+                request,
+                object_detector_error=message,
                 status_code=422,
             )
         return RedirectResponse("/settings", status_code=303)

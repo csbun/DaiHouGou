@@ -20,12 +20,13 @@ from daihougou.rules import (
     SpeechAction,
     WelcomeRule,
 )
-from daihougou.settings import SpeakerConfig
+from daihougou.settings import ObjectDetectorAdapter, SpeakerConfig
 from daihougou.speaker_worker import SpeakerManager
 from daihougou.storage import CameraConfig, Storage, StoredEvent
 from daihougou.vision.frame_source import OBJECT_FRAME_SIZE, PERSON_FRAME_SIZE
 
 FrameSourceFactory = Callable[[str, int, DetectionRegion], FrameSource]
+ObjectDetectorFactory = Callable[["ObjectDetectorAdapter"], object]
 
 
 class Discovery(Protocol):
@@ -44,6 +45,8 @@ class ManagedScheduler(Protocol):
     async def start(self) -> None: ...
 
     async def stop(self) -> None: ...
+
+    async def replace_factory(self, kind: DetectorKind, factory: Callable[[], object]) -> None: ...
 
 
 class ManagedSpeakerManager(Protocol):
@@ -69,6 +72,13 @@ class DetectorView:
     kind: str
     status: str
     loaded: bool
+
+
+@dataclass(frozen=True)
+class ObjectDetectorOption:
+    adapter: ObjectDetectorAdapter
+    available: bool
+    selected: bool
 
 
 @dataclass(frozen=True)
@@ -112,12 +122,26 @@ class CameraView:
             object.__setattr__(
                 self,
                 "last_confidence",
-                next((rule.last_confidence for rule in self.rules if rule.last_confidence is not None), None),
+                next(
+                    (
+                        rule.last_confidence
+                        for rule in self.rules
+                        if rule.last_confidence is not None
+                    ),
+                    None,
+                ),
             )
             object.__setattr__(
                 self,
                 "last_detection_latency_ms",
-                next((rule.last_detection_latency_ms for rule in self.rules if rule.last_detection_latency_ms is not None), None),
+                next(
+                    (
+                        rule.last_detection_latency_ms
+                        for rule in self.rules
+                        if rule.last_detection_latency_ms is not None
+                    ),
+                    None,
+                ),
             )
             object.__setattr__(
                 self,
@@ -155,7 +179,9 @@ class CameraView:
                     ),
                 }
                 for rule in self.rules
-            ] if self.rules else None,
+            ]
+            if self.rules
+            else None,
             "stream": self.stream,
             "presence": self.presence,
             "last_error": self.last_error,
@@ -225,6 +251,8 @@ class Runtime:
         snapshotter: Snapshotter,
         leave_seconds: float,
         welcome_cooldown_seconds: float,
+        object_detector_factory: ObjectDetectorFactory | None = None,
+        object_detector_available: Callable[[ObjectDetectorAdapter], bool] | None = None,
     ) -> None:
         if not speakers:
             raise ValueError("at least one speaker is required")
@@ -240,11 +268,11 @@ class Runtime:
         self._snapshot_semaphore = asyncio.Semaphore(1)
         self._leave_seconds = leave_seconds
         self._welcome_cooldown_seconds = welcome_cooldown_seconds
+        self._object_detector_factory = object_detector_factory
+        self._object_detector_available = object_detector_available or (lambda _: False)
         self._available_stream_ids: frozenset[str] | None = None
         self._camera_runtimes: dict[str, CameraRuntime] = {}
-        self._camera_descriptors: dict[
-            str, tuple[frozenset[str], int, DetectionRegion]
-        ] = {}
+        self._camera_descriptors: dict[str, tuple[frozenset[str], int, DetectionRegion]] = {}
         self._camera_runtime_errors: dict[str, str] = {}
         self._pending_object_baselines: set[str] = set()
         self._app_status = "stopped"
@@ -318,16 +346,10 @@ class Runtime:
         async with self._lock:
             self._storage.set_camera_speaker(camera_id, speaker_id)
 
-    async def set_camera_detection_region(
-        self, camera_id: str, region: DetectionRegion
-    ) -> None:
+    async def set_camera_detection_region(self, camera_id: str, region: DetectionRegion) -> None:
         async with self._lock:
             current = next(
-                (
-                    item
-                    for item in self._storage.list_cameras()
-                    if item.stream_id == camera_id
-                ),
+                (item for item in self._storage.list_cameras() if item.stream_id == camera_id),
                 None,
             )
             if current is None:
@@ -339,9 +361,7 @@ class Runtime:
             await self._reconcile()
 
     async def capture_camera_snapshot(self, camera_id: str) -> bytes:
-        if not any(
-            camera.stream_id == camera_id for camera in self._storage.list_cameras()
-        ):
+        if not any(camera.stream_id == camera_id for camera in self._storage.list_cameras()):
             raise KeyError(camera_id)
         rtsp_url = rtsp_stream_url(self._rtsp_base_url, camera_id)
         async with self._snapshot_semaphore:
@@ -353,12 +373,46 @@ class Runtime:
     def set_welcome_phrases(self, lines: Sequence[str]) -> tuple[str, ...]:
         return self._storage.set_welcome_phrases(lines)
 
+    def object_detector_options(self) -> tuple[ObjectDetectorOption, ...]:
+        selected = self._storage.object_detector_adapter()
+        return tuple(
+            ObjectDetectorOption(
+                adapter=adapter,
+                available=self._object_detector_available(adapter),
+                selected=adapter is selected,
+            )
+            for adapter in ObjectDetectorAdapter
+        )
+
+    async def set_object_detector_adapter(self, adapter: ObjectDetectorAdapter) -> None:
+        async with self._lock:
+            if self._storage.object_detector_adapter() is adapter:
+                return
+            if self._object_detector_factory is None or not self._object_detector_available(
+                adapter
+            ):
+                raise RuntimeError("object_detector_unavailable")
+            try:
+                await self._scheduler.replace_factory(
+                    DetectorKind.OBJECT,
+                    lambda: self._object_detector_factory(adapter),
+                )
+            except Exception as error:
+                raise RuntimeError("object_detector_switch_failed") from error
+            self._storage.set_object_detector_adapter(adapter)
+
     def snapshot(self) -> RuntimeSnapshot:
         speaker_names = {speaker.id: speaker.name for speaker in self._speakers}
-        cameras = tuple(self._camera_view(config, speaker_names) for config in self._storage.list_cameras())
+        cameras = tuple(
+            self._camera_view(config, speaker_names) for config in self._storage.list_cameras()
+        )
         shared_failed = self._scheduler.fatal_error or self._speaker_manager.fatal_error
         detectors = tuple(
-            DetectorView(kind.value, self._detector_snapshot(kind).status, self._detector_snapshot(kind).loaded)
+            DetectorView(
+                kind.value,
+                self._detector_snapshot(kind).status,
+                self._detector_snapshot(kind).loaded,
+            )
             for kind in DetectorKind
         )
         return RuntimeSnapshot(
@@ -388,10 +442,7 @@ class Runtime:
             stream_id: rule_ids
             for stream_id, rule_ids in enabled_by_camera.items()
             if rule_ids
-            and (
-                self._available_stream_ids is None
-                or stream_id in self._available_stream_ids
-            )
+            and (self._available_stream_ids is None or stream_id in self._available_stream_ids)
         }
         if self._available_stream_ids is None:
             desired = {stream_id: ids for stream_id, ids in enabled_by_camera.items() if ids}
@@ -409,16 +460,17 @@ class Runtime:
             self._camera_descriptors.pop(stream_id, None)
             self._camera_runtime_errors.pop(stream_id, None)
         for stream_id in (
-            self._camera_runtime_errors.keys()
-            - desired.keys()
-            - self._camera_runtimes.keys()
+            self._camera_runtime_errors.keys() - desired.keys() - self._camera_runtimes.keys()
         ):
             self._camera_runtime_errors.pop(stream_id)
 
         needed = {
             kind
             for rule_ids in desired.values()
-            for kind, rule_id in ((DetectorKind.PERSON, WELCOME_RULE_ID), (DetectorKind.OBJECT, OBJECT_RULE_ID))
+            for kind, rule_id in (
+                (DetectorKind.PERSON, WELCOME_RULE_ID),
+                (DetectorKind.OBJECT, OBJECT_RULE_ID),
+            )
             if rule_id in rule_ids
         }
         for kind in DetectorKind:
@@ -468,9 +520,7 @@ class Runtime:
                     object_rule=ObjectCategoryAnnouncementRule(stream_id, self._storage)
                     if OBJECT_RULE_ID in rule_ids
                     else None,
-                    suppress_initial_object_detection=(
-                        stream_id in self._pending_object_baselines
-                    ),
+                    suppress_initial_object_detection=(stream_id in self._pending_object_baselines),
                 )
                 self._camera_runtimes[stream_id] = camera
                 await camera.start()
@@ -486,9 +536,7 @@ class Runtime:
             self._camera_runtime_errors.pop(stream_id, None)
             self._pending_object_baselines.discard(stream_id)
 
-    def _make_source(
-        self, url: str, size: int, region: DetectionRegion
-    ) -> FrameSource:
+    def _make_source(self, url: str, size: int, region: DetectionRegion) -> FrameSource:
         return self._frame_source_factory(url, size, region)
 
     async def _enable_detector(self, kind: DetectorKind) -> None:
@@ -517,14 +565,22 @@ class Runtime:
             result = snapshot(kind)
             if isinstance(result, DetectorSnapshot):
                 return result
-        return DetectorSnapshot(self._scheduler.status, self._scheduler.loaded, self._scheduler.fatal_error)
+        return DetectorSnapshot(
+            self._scheduler.status, self._scheduler.loaded, self._scheduler.fatal_error
+        )
 
     def _camera_view(self, config: CameraConfig, speaker_names: dict[str, str]) -> CameraView:
-        available = None if self._available_stream_ids is None else config.stream_id in self._available_stream_ids
+        available = (
+            None
+            if self._available_stream_ids is None
+            else config.stream_id in self._available_stream_ids
+        )
         runtime = self._camera_runtimes.get(config.stream_id)
         runtime_error = self._camera_runtime_errors.get(config.stream_id, "")
         enabled_ids = tuple(
-            rule_id for rule_id in BUILTIN_RULE_IDS if self._storage.camera_rule_enabled(config.stream_id, rule_id)
+            rule_id
+            for rule_id in BUILTIN_RULE_IDS
+            if self._storage.camera_rule_enabled(config.stream_id, rule_id)
         )
         if runtime is not None:
             state = runtime.snapshot()
@@ -581,7 +637,9 @@ class Runtime:
                         "detector_start_failed"
                         if rule_id in enabled_ids
                         and self._detector_snapshot(
-                            DetectorKind.PERSON if rule_id == WELCOME_RULE_ID else DetectorKind.OBJECT
+                            DetectorKind.PERSON
+                            if rule_id == WELCOME_RULE_ID
+                            else DetectorKind.OBJECT
                         ).status
                         == "degraded"
                         else ""

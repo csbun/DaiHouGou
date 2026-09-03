@@ -10,7 +10,7 @@ from daihougou.detection_region import FULL_FRAME_REGION, DetectionRegion
 from daihougou.go2rtc import DiscoveryError
 from daihougou.rules import OBJECT_RULE_ID, WELCOME_RULE_ID, SpeechAction
 from daihougou.runtime import Runtime
-from daihougou.settings import SpeakerConfig
+from daihougou.settings import ObjectDetectorAdapter, SpeakerConfig
 from daihougou.storage import EventRecord, Storage
 from daihougou.vision.frame_source import FrameSample
 from daihougou.vision.object_detector import ObjectDetection
@@ -61,6 +61,8 @@ class FakeDetectionScheduler:
         self.starts = 0
         self.stops = 0
         self.object_samples: list[int] = []
+        self.object_replacements: list[ObjectDetectorAdapter] = []
+        self.replacement_error: RuntimeError | None = None
 
     async def start(self) -> None:
         self.loaded = True
@@ -75,11 +77,15 @@ class FakeDetectionScheduler:
     async def detect(self, camera_id: str, sample: FrameSample) -> PersonDetection:
         return PersonDetection(False, 0.1, 1)
 
-    async def detect_objects(
-        self, camera_id: str, sample: FrameSample
-    ) -> ObjectDetection:
+    async def detect_objects(self, camera_id: str, sample: FrameSample) -> ObjectDetection:
         self.object_samples.append(sample.sequence)
         return ObjectDetection((), 1)
+
+    async def replace_factory(self, kind, factory) -> None:
+        assert kind.value == "object"
+        if self.replacement_error is not None:
+            raise self.replacement_error
+        self.object_replacements.append(factory())
 
 
 class FakeSpeakerManager:
@@ -119,6 +125,7 @@ def make_runtime(
     broken_streams: frozenset[str] = frozenset(),
     speaker_manager: FakeSpeakerManager | None = None,
     snapshotter: FakeSnapshotter | None = None,
+    unavailable_object_adapters: frozenset[ObjectDetectorAdapter] = frozenset(),
 ) -> tuple[
     Runtime,
     FakeDiscovery,
@@ -154,8 +161,92 @@ def make_runtime(
         snapshotter=snapshotter or FakeSnapshotter(),
         leave_seconds=10,
         welcome_cooldown_seconds=60,
+        object_detector_factory=lambda adapter: adapter,
+        object_detector_available=lambda adapter: adapter not in unavailable_object_adapters,
     )
     return runtime, discovery, sources, scheduler, source_calls
+
+
+def test_runtime_switches_and_persists_the_global_object_detector_adapter(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        runtime, _discovery, _sources, scheduler, _source_calls = make_runtime(
+            tmp_path, discoveries=[("front",)]
+        )
+        await runtime.start()
+
+        assert [
+            (option.adapter, option.available, option.selected)
+            for option in runtime.object_detector_options()
+        ] == [
+            (ObjectDetectorAdapter.NANODET, True, True),
+            (ObjectDetectorAdapter.OBJECTS365, True, False),
+        ]
+
+        await runtime.set_object_detector_adapter(ObjectDetectorAdapter.OBJECTS365)
+
+        assert scheduler.object_replacements == [ObjectDetectorAdapter.OBJECTS365]
+        assert Storage(tmp_path / "app.db").object_detector_adapter() is (
+            ObjectDetectorAdapter.OBJECTS365
+        )
+        assert (
+            next(option for option in runtime.object_detector_options() if option.selected).adapter
+            is ObjectDetectorAdapter.OBJECTS365
+        )
+        await runtime.stop()
+
+    asyncio.run(scenario())
+
+
+def test_runtime_rejects_unavailable_object_detector_without_persisting(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        runtime, _discovery, _sources, scheduler, _source_calls = make_runtime(
+            tmp_path,
+            discoveries=[("front",)],
+            unavailable_object_adapters=frozenset({ObjectDetectorAdapter.OBJECTS365}),
+        )
+        await runtime.start()
+
+        try:
+            await runtime.set_object_detector_adapter(ObjectDetectorAdapter.OBJECTS365)
+        except RuntimeError as error:
+            assert str(error) == "object_detector_unavailable"
+        else:
+            raise AssertionError("unavailable detector was accepted")
+
+        assert scheduler.object_replacements == []
+        assert Storage(tmp_path / "app.db").object_detector_adapter() is (
+            ObjectDetectorAdapter.NANODET
+        )
+        await runtime.stop()
+
+    asyncio.run(scenario())
+
+
+def test_runtime_keeps_persisted_adapter_when_replacement_fails(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        runtime, _discovery, _sources, scheduler, _source_calls = make_runtime(
+            tmp_path, discoveries=[("front",)]
+        )
+        await runtime.start()
+        scheduler.replacement_error = RuntimeError("detector_replace_failed:object")
+
+        try:
+            await runtime.set_object_detector_adapter(ObjectDetectorAdapter.OBJECTS365)
+        except RuntimeError as error:
+            assert str(error) == "object_detector_switch_failed"
+        else:
+            raise AssertionError("failed detector replacement was persisted")
+
+        assert Storage(tmp_path / "app.db").object_detector_adapter() is (
+            ObjectDetectorAdapter.NANODET
+        )
+        await runtime.stop()
+
+    asyncio.run(scenario())
 
 
 def test_start_discovers_once_and_new_cameras_stay_idle(tmp_path: Path) -> None:
@@ -431,11 +522,7 @@ def test_region_update_restarts_only_its_camera_and_keeps_event_history(tmp_path
         assert sources["back"] is old_back
         assert old_back.stop_count == 0
         assert source_calls[-1] == ("front", 256, region)
-        front = next(
-            camera
-            for camera in runtime.snapshot().cameras
-            if camera.stream_id == "front"
-        )
+        front = next(camera for camera in runtime.snapshot().cameras if camera.stream_id == "front")
         assert front.detection_region == region
         assert len(runtime.snapshot().events) == event_count
         await runtime.stop()
@@ -469,15 +556,11 @@ def test_disabled_camera_region_update_creates_no_source(tmp_path: Path) -> None
         )
         await runtime.start()
 
-        await runtime.set_camera_detection_region(
-            "front", DetectionRegion(0.1, 0.1, 0.8, 0.8)
-        )
+        await runtime.set_camera_detection_region("front", DetectionRegion(0.1, 0.1, 0.8, 0.8))
 
         assert sources == {}
         assert source_calls == []
-        assert runtime.snapshot().cameras[0].detection_region == DetectionRegion(
-            0.1, 0.1, 0.8, 0.8
-        )
+        assert runtime.snapshot().cameras[0].detection_region == DetectionRegion(0.1, 0.1, 0.8, 0.8)
         await runtime.stop()
 
     asyncio.run(scenario())
@@ -573,9 +656,7 @@ def test_region_update_retry_still_suppresses_first_object_frame(tmp_path: Path)
                 ]
             )
 
-        def wait_for_frame(
-            self, after_sequence: int, timeout: float
-        ) -> FrameSample | None:
+        def wait_for_frame(self, after_sequence: int, timeout: float) -> FrameSample | None:
             if self.samples:
                 return self.samples.popleft()
             time.sleep(0.005)
@@ -589,9 +670,7 @@ def test_region_update_retry_still_suppresses_first_object_frame(tmp_path: Path)
         await runtime.set_rule_enabled("front", OBJECT_RULE_ID, True)
         attempts = 0
 
-        def retrying_factory(
-            url: str, size: int, region: DetectionRegion
-        ) -> FakeSource:
+        def retrying_factory(url: str, size: int, region: DetectionRegion) -> FakeSource:
             nonlocal attempts
             attempts += 1
             if attempts == 1:
@@ -601,9 +680,7 @@ def test_region_update_retry_still_suppresses_first_object_frame(tmp_path: Path)
             return source
 
         runtime._frame_source_factory = retrying_factory
-        await runtime.set_camera_detection_region(
-            "front", DetectionRegion(0.1, 0.2, 0.6, 0.5)
-        )
+        await runtime.set_camera_detection_region("front", DetectionRegion(0.1, 0.2, 0.6, 0.5))
         await runtime.refresh_cameras()
         await runtime.refresh_cameras()
 
@@ -698,9 +775,7 @@ def test_snapshots_are_serialized_without_holding_runtime_lock(tmp_path: Path) -
         def capture(self, rtsp_url: str) -> bytes:
             call_number = len(self.calls) + 1
             self.calls.append(rtsp_url)
-            loop = asyncio.run_coroutine_threadsafe(
-                self._mark_and_wait(call_number), event_loop
-            )
+            loop = asyncio.run_coroutine_threadsafe(self._mark_and_wait(call_number), event_loop)
             loop.result(timeout=2)
             return b"\xff\xd8snapshot"
 
@@ -728,9 +803,7 @@ def test_snapshots_are_serialized_without_holding_runtime_lock(tmp_path: Path) -
         await asyncio.sleep(0.02)
         assert snapshotter.second_entered.is_set() is False
 
-        await asyncio.wait_for(
-            runtime.set_camera_speaker("front", "bedroom"), timeout=1
-        )
+        await asyncio.wait_for(runtime.set_camera_speaker("front", "bedroom"), timeout=1)
         snapshotter.release_first.set()
         await asyncio.gather(first, second)
 

@@ -27,10 +27,17 @@ _Avoid_: Object entry rule, object recognition feature, animal rule
 
 **Supported Category**:
 A predefined non-person object category that the Object Category Announcement Rule
-may announce. All Supported Categories are eligible without per-camera selection,
-are published in a read-only bilingual list, and may include common animals such as
-cats and dogs.
+may announce. Its fixed vocabulary comes from the active detector adapter; all of its
+categories are eligible without per-camera selection and are published in a read-only
+list with an English label and a maintained display name.
 _Avoid_: Target category, object name, prompt, custom class
+
+**Object Detector Selection**:
+The single detector adapter used by every Object Category Announcement Rule. It is
+selected globally in the management interface, persists across restarts, and defaults
+to NanoDet. A new selection takes effect only after its model loads successfully; an
+unavailable or failed selection leaves the current detector and stored choice intact.
+_Avoid_: Per-camera model, detector environment override
 
 **Scene Change**:
 A meaningful visual change, such as turning a picture-book page, that makes the

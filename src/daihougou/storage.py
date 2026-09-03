@@ -10,12 +10,27 @@ from typing import Any
 
 from daihougou.detection_region import DetectionRegion
 from daihougou.redaction import redact
-from daihougou.rules import BUILTIN_RULE_IDS, WELCOME_PHRASES, WELCOME_RULE_ID
+from daihougou.rules import (
+    BUILTIN_RULE_IDS,
+    OBJECT_RULE_ID,
+    WELCOME_PHRASES,
+    WELCOME_RULE_ID,
+)
+from daihougou.settings import ObjectDetectorAdapter
 
 SCHEMA_VERSION = 3
 _SCHEMA_TABLES = frozenset({"camera_rules", "cameras", "events", "rule_configs"})
 _CAMERA_COLUMNS = frozenset(
-    {"stream_id", "speaker_id", "first_seen_at", "last_seen_at", "region_x", "region_y", "region_width", "region_height"}
+    {
+        "stream_id",
+        "speaker_id",
+        "first_seen_at",
+        "last_seen_at",
+        "region_x",
+        "region_y",
+        "region_width",
+        "region_height",
+    }
 )
 _V2_TABLE_DEFINITIONS = {
     "cameras": "CREATE TABLE cameras ( stream_id TEXT PRIMARY KEY, speaker_id TEXT NOT NULL, first_seen_at TEXT NOT NULL, last_seen_at TEXT NOT NULL )",
@@ -208,6 +223,17 @@ class Storage:
                 """,
                 (WELCOME_RULE_ID, json.dumps(WELCOME_PHRASES, ensure_ascii=False), self._now()),
             )
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO rule_configs(rule_id, config_json, updated_at)
+                VALUES (?, ?, ?)
+                """,
+                (
+                    OBJECT_RULE_ID,
+                    json.dumps({"detector_adapter": ObjectDetectorAdapter.NANODET}),
+                    self._now(),
+                ),
+            )
             row = connection.execute(
                 "SELECT config_json FROM rule_configs WHERE rule_id = ?",
                 (WELCOME_RULE_ID,),
@@ -279,9 +305,7 @@ class Storage:
             raise KeyError((camera_id, rule_id))
         return bool(row["enabled"])
 
-    def set_camera_rule_enabled(
-        self, camera_id: str, rule_id: str, enabled: bool
-    ) -> None:
+    def set_camera_rule_enabled(self, camera_id: str, rule_id: str, enabled: bool) -> None:
         with self._connect() as connection:
             cursor = connection.execute(
                 """
@@ -311,9 +335,7 @@ class Storage:
             if cursor.rowcount != 1:
                 raise KeyError(camera_id)
 
-    def set_camera_detection_region(
-        self, camera_id: str, region: DetectionRegion
-    ) -> None:
+    def set_camera_detection_region(self, camera_id: str, region: DetectionRegion) -> None:
         with self._connect() as connection:
             cursor = connection.execute(
                 """
@@ -351,6 +373,35 @@ class Storage:
             )
         return phrases
 
+    def object_detector_adapter(self) -> ObjectDetectorAdapter:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT config_json FROM rule_configs WHERE rule_id = ?",
+                (OBJECT_RULE_ID,),
+            ).fetchone()
+        if row is None:
+            raise KeyError(OBJECT_RULE_ID)
+        config = json.loads(str(row["config_json"]))
+        return ObjectDetectorAdapter(config["detector_adapter"])
+
+    def set_object_detector_adapter(self, adapter: ObjectDetectorAdapter) -> ObjectDetectorAdapter:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO rule_configs(rule_id, config_json, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(rule_id) DO UPDATE SET
+                    config_json = excluded.config_json,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    OBJECT_RULE_ID,
+                    json.dumps({"detector_adapter": adapter}),
+                    self._now(),
+                ),
+            )
+        return adapter
+
     def record_event(self, event: EventRecord) -> None:
         details_json = json.dumps(redact(event.details), ensure_ascii=False, sort_keys=True)
         with self._connect() as connection:
@@ -381,9 +432,7 @@ class Storage:
             ).fetchall()
         return [self._stored_event(row) for row in rows]
 
-    def latest_rule_trigger(
-        self, rule_id: str, camera_id: str | None = None
-    ) -> StoredEvent | None:
+    def latest_rule_trigger(self, rule_id: str, camera_id: str | None = None) -> StoredEvent | None:
         with self._connect() as connection:
             row = connection.execute(
                 """
@@ -405,19 +454,12 @@ class Storage:
             return str(connection.execute("PRAGMA journal_mode").fetchone()[0])
 
     @staticmethod
-    def _schema_matches(
-        connection: sqlite3.Connection, expected: dict[str, str]
-    ) -> bool:
+    def _schema_matches(connection: sqlite3.Connection, expected: dict[str, str]) -> bool:
         rows = connection.execute(
             "SELECT name, sql FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
         ).fetchall()
-        actual = {
-            str(row["name"]): "".join(str(row["sql"]).lower().split())
-            for row in rows
-        }
-        normalized_expected = {
-            name: "".join(sql.lower().split()) for name, sql in expected.items()
-        }
+        actual = {str(row["name"]): "".join(str(row["sql"]).lower().split()) for row in rows}
+        normalized_expected = {name: "".join(sql.lower().split()) for name, sql in expected.items()}
         return actual == normalized_expected
 
     @staticmethod

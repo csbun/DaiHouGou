@@ -13,9 +13,11 @@ def test_docker_context_excludes_sensitive_and_generated_paths() -> None:
         ".worktrees",
         ".env.poc",
         ".env.mvp",
+        ".venv",
         "artifacts",
         "config/poc-devices.json",
         "deploy/app/state",
+        "deploy/app/models",
         "deploy/go2rtc/state",
         "deploy/homeassistant/state",
         "deploy/miservice/state",
@@ -23,6 +25,7 @@ def test_docker_context_excludes_sensitive_and_generated_paths() -> None:
         "**/.pytest_cache",
         "**/.ruff_cache",
         "**/*.pyc",
+        "**/*.egg-info",
     } <= ignored_paths
     assert {"pyproject.toml", "src", "tests"}.isdisjoint(ignored_paths)
 

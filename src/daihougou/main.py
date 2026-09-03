@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import os
 
 import uvicorn
@@ -8,12 +10,13 @@ from daihougou.detection_region import DetectionRegion
 from daihougou.detection_scheduler import DetectionScheduler
 from daihougou.go2rtc import Go2RtcClient
 from daihougou.runtime import Runtime
-from daihougou.settings import Settings
+from daihougou.settings import ObjectDetectorAdapter, Settings
 from daihougou.speaker import DirectSpeaker
 from daihougou.speaker_worker import SpeakerManager
 from daihougou.storage import Storage
 from daihougou.vision.frame_source import FfmpegFrameSource
 from daihougou.vision.object_detector import ObjectDetector
+from daihougou.vision.objects365_detector import Objects365ObjectDetector
 from daihougou.vision.person_detector import PersonDetector
 from daihougou.web import create_app
 
@@ -32,18 +35,22 @@ def create_production_app(settings: Settings | None = None) -> FastAPI:
         },
         storage,
     )
+
+    def object_detector_for(
+        adapter: ObjectDetectorAdapter,
+    ) -> ObjectDetector | Objects365ObjectDetector:
+        if adapter is ObjectDetectorAdapter.OBJECTS365:
+            return Objects365ObjectDetector(resolved.objects365_model)
+        return ObjectDetector(resolved.object_model)
+
     scheduler = DetectionScheduler(
         lambda: PersonDetector(resolved.model, resolved.person_threshold),
-        lambda: ObjectDetector(resolved.object_model),
+        lambda: object_detector_for(storage.object_detector_adapter()),
     )
 
-    def frame_source_factory(
-        url: str, size: int, region: DetectionRegion
-    ) -> FfmpegFrameSource:
+    def frame_source_factory(url: str, size: int, region: DetectionRegion) -> FfmpegFrameSource:
         try:
-            return FfmpegFrameSource(
-                url, resolved.detection_fps, size=size, region=region
-            )
+            return FfmpegFrameSource(url, resolved.detection_fps, size=size, region=region)
         except TypeError:
             return FfmpegFrameSource(url, resolved.detection_fps)
 
@@ -58,6 +65,12 @@ def create_production_app(settings: Settings | None = None) -> FastAPI:
         snapshotter=CameraSnapshotter(),
         leave_seconds=resolved.leave_seconds,
         welcome_cooldown_seconds=resolved.welcome_cooldown_seconds,
+        object_detector_factory=object_detector_for,
+        object_detector_available=lambda adapter: (
+            resolved.objects365_model
+            if adapter is ObjectDetectorAdapter.OBJECTS365
+            else resolved.object_model
+        ).is_file(),
     )
     return create_app(runtime)
 

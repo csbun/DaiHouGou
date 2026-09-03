@@ -1,4 +1,8 @@
-from daihougou.object_catalog import SUPPORTED_CATEGORY_NAMES
+from daihougou.object_catalog import (
+    COCO_CATEGORY_NAMES,
+    OBJECTS365_CATEGORY_NAMES,
+    SUPPORTED_CATEGORY_NAMES,
+)
 from daihougou.object_rule import ObjectCategoryAnnouncementRule
 from daihougou.rules import OBJECT_RULE_ID
 from daihougou.vision.object_detector import (
@@ -6,6 +10,7 @@ from daihougou.vision.object_detector import (
     DetectedObject,
     ObjectDetection,
 )
+from daihougou.vision.objects365_detector import OBJECTS365_CATEGORIES
 
 
 class RuleState:
@@ -55,7 +60,11 @@ def test_object_rule_filters_deduplicates_limits_and_builds_replaceable_action()
     }
 
 
-def test_supported_catalog_matches_every_non_person_model_category() -> None:
-    assert tuple(SUPPORTED_CATEGORY_NAMES) == COCO_CATEGORIES[1:]
+def test_supported_catalog_covers_both_detector_vocabularies() -> None:
+    assert tuple(COCO_CATEGORY_NAMES) == COCO_CATEGORIES[1:]
+    assert tuple(OBJECTS365_CATEGORY_NAMES) == OBJECTS365_CATEGORIES[1:]
+    assert set(COCO_CATEGORIES[1:]).issubset(SUPPORTED_CATEGORY_NAMES)
+    assert set(OBJECTS365_CATEGORIES[1:]).issubset(SUPPORTED_CATEGORY_NAMES)
     assert SUPPORTED_CATEGORY_NAMES["cat"] == "猫"
     assert SUPPORTED_CATEGORY_NAMES["dog"] == "狗"
+    assert SUPPORTED_CATEGORY_NAMES["rabbit"] == "兔子"

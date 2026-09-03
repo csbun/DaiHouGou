@@ -64,6 +64,8 @@ class DetectionScheduler:
             tuple[DetectorKind, str], asyncio.Future[PersonDetection | ObjectDetection]
         ] = {}
         self._task: asyncio.Task[None] | None = None
+        self._replacement_lock = asyncio.Lock()
+        self._inference_lock = asyncio.Lock()
         self.fatal_error = False
 
     @property
@@ -109,6 +111,29 @@ class DetectionScheduler:
         self._fatal_errors[kind] = False
         if not self._detectors:
             await self._stop_consumer()
+
+    async def replace_factory(
+        self,
+        kind: DetectorKind,
+        factory: Callable[[], PersonDetectorProtocol | ObjectDetectorProtocol],
+    ) -> None:
+        async with self._replacement_lock:
+            try:
+                replacement = await asyncio.to_thread(factory)
+            except Exception as error:
+                raise RuntimeError(f"detector_replace_failed:{kind.value}") from error
+
+            async with self._inference_lock:
+                should_be_loaded = self._statuses[kind] != "stopped"
+                self._factories[kind] = factory
+                if not should_be_loaded:
+                    return
+                self._detectors[kind] = replacement
+                self._statuses[kind] = "ready"
+                self._fatal_errors[kind] = False
+                if self._task is None or self._task.done():
+                    self._task = asyncio.create_task(self._consume(), name="detection-scheduler")
+                    self._task.add_done_callback(self._record_task_result)
 
     async def detect_person(self, camera_id: str, sample: FrameSample) -> PersonDetection:
         result = await self._detect(DetectorKind.PERSON, camera_id, sample)
@@ -179,10 +204,11 @@ class DetectionScheduler:
             try:
                 if job is None:
                     return
-                detector = self._detectors.get(job.kind)
-                if detector is None:
-                    raise RuntimeError("detector_stopped")
-                result = await asyncio.to_thread(detector.detect, job.sample.frame)
+                async with self._inference_lock:
+                    detector = self._detectors.get(job.kind)
+                    if detector is None:
+                        raise RuntimeError("detector_stopped")
+                    result = await asyncio.to_thread(detector.detect, job.sample.frame)
                 if not job.future.done():
                     job.future.set_result(result)
             except asyncio.CancelledError:

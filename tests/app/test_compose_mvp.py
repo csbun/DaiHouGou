@@ -7,6 +7,7 @@ def test_compose_runs_one_app_with_persistent_data_and_miservice_home() -> None:
     assert "dockerfile: docker/mvp.Dockerfile" in compose
     assert "container_name: daihougou-app" in compose
     assert "./deploy/app/state:/var/lib/daihougou/data" in compose
+    assert "./deploy/app/models:/opt/daihougou/models/custom:ro" in compose
     assert "./deploy/miservice/state:/var/lib/daihougou/mi" in compose
     assert "HOME: /var/lib/daihougou/mi" in compose
     assert 'test: ["CMD", "python", "-m", "daihougou.healthcheck"]' in compose
@@ -29,3 +30,7 @@ def test_mvp_environment_example_contains_no_real_credentials() -> None:
     assert "owner@example" not in example
     assert "123456789" not in example
     assert "WEB_HOST=SERVER_LAN_IP" in example
+    assert "OBJECT_DETECTOR_ADAPTER" not in example
+    assert (
+        "OBJECTS365_MODEL=/opt/daihougou/models/custom/object_detection_objects365_yolo26n_416.onnx"
+    ) in example

@@ -34,3 +34,19 @@ def test_selection_filters_book_at_exactly_half_the_frame_area() -> None:
     selected = select_announced_objects(result, frame_width=100, frame_height=100)
 
     assert selected == ()
+
+
+def test_selection_applies_the_same_rules_to_objects365_categories() -> None:
+    result = ObjectDetection(
+        objects=(
+            obj("person", 0.99, (0, 0, 10, 10)),
+            obj("book", 0.95, (0, 0, 100, 60)),
+            obj("rabbit", 0.90, (10, 10, 30, 30)),
+            obj("lion", 0.80, (40, 40, 80, 80)),
+        ),
+        latency_ms=1,
+    )
+
+    selected = select_announced_objects(result, frame_width=100, frame_height=100)
+
+    assert tuple(item.label for item in selected) == ("rabbit", "lion")

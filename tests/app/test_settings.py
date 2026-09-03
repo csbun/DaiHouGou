@@ -26,11 +26,13 @@ def test_settings_parse_speakers_and_discovery_defaults() -> None:
     assert settings.go2rtc_api_url == "http://127.0.0.1:1984"
     assert settings.go2rtc_rtsp_base_url == "rtsp://127.0.0.1:8554"
     assert settings.data_dir == Path("/var/lib/daihougou/data")
-    assert settings.model == Path(
-        "/opt/daihougou/models/person_detection_mediapipe_2023mar.onnx"
-    )
+    assert settings.model == Path("/opt/daihougou/models/person_detection_mediapipe_2023mar.onnx")
     assert settings.object_model == Path(
         "/opt/daihougou/models/object_detection_nanodet_2022nov.onnx"
+    )
+    assert not hasattr(settings, "object_detector_adapter")
+    assert settings.objects365_model == Path(
+        "/opt/daihougou/models/custom/object_detection_objects365_yolo26n_416.onnx"
     )
     assert settings.detection_fps == 1.0
     assert settings.person_threshold == 0.55
@@ -96,6 +98,23 @@ def test_settings_accepts_custom_object_model_path() -> None:
     assert settings.object_model == Path("/models/object.onnx")
 
 
+def test_settings_accepts_objects365_model_path() -> None:
+    settings = Settings.from_mapping(
+        {
+            **BASE_ENV,
+            "OBJECTS365_MODEL": "/models/objects365.onnx",
+        }
+    )
+
+    assert settings.objects365_model == Path("/models/objects365.onnx")
+
+
+def test_settings_ignores_removed_object_detector_adapter_environment_variable() -> None:
+    settings = Settings.from_mapping({**BASE_ENV, "OBJECT_DETECTOR_ADAPTER": "objects365"})
+
+    assert not hasattr(settings, "object_detector_adapter")
+
+
 @pytest.mark.parametrize(
     ("key", "value", "message"),
     [
@@ -105,9 +124,7 @@ def test_settings_accepts_custom_object_model_path() -> None:
         ("DETECTION_FPS", "0", "DETECTION_FPS must be greater than 0"),
     ],
 )
-def test_settings_from_mapping_rejects_invalid_values(
-    key: str, value: str, message: str
-) -> None:
+def test_settings_from_mapping_rejects_invalid_values(key: str, value: str, message: str) -> None:
     env = {**BASE_ENV, key: value}
 
     with pytest.raises(ValueError, match=f"^{message}$"):

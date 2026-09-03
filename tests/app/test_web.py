@@ -7,7 +7,13 @@ from fastapi.testclient import TestClient
 
 from daihougou.camera_snapshot import SnapshotUnavailable
 from daihougou.detection_region import FULL_FRAME_REGION, DetectionRegion
-from daihougou.runtime import CameraView, RuntimeSnapshot, SpeakerOption
+from daihougou.runtime import (
+    CameraView,
+    ObjectDetectorOption,
+    RuntimeSnapshot,
+    SpeakerOption,
+)
+from daihougou.settings import ObjectDetectorAdapter
 from daihougou.storage import StoredEvent, normalize_welcome_phrases
 from daihougou.web import create_app
 
@@ -19,9 +25,11 @@ def snapshot_fixture(
     rules_enabled: bool = True,
     detection_region: DetectionRegion = FULL_FRAME_REGION,
 ) -> RuntimeSnapshot:
-    names = list(camera_ids) if camera_ids is not None else ["front", "back"] + [
-        f"camera_{number}" for number in range(3, camera_count + 1)
-    ]
+    names = (
+        list(camera_ids)
+        if camera_ids is not None
+        else ["front", "back"] + [f"camera_{number}" for number in range(3, camera_count + 1)]
+    )
     cameras = tuple(
         CameraView(
             stream_id=name,
@@ -63,6 +71,9 @@ class FakeRuntime:
         detection_region: DetectionRegion = FULL_FRAME_REGION,
         snapshot_bytes: bytes = b"\xff\xd8snapshot",
         snapshot_error: Exception | None = None,
+        object_detector_adapter: ObjectDetectorAdapter = ObjectDetectorAdapter.NANODET,
+        unavailable_object_adapters: frozenset[ObjectDetectorAdapter] = frozenset(),
+        object_detector_error: RuntimeError | None = None,
     ) -> None:
         self.refresh_calls = 0
         self.rule_updates: list[tuple[str, bool]] = []
@@ -70,6 +81,10 @@ class FakeRuntime:
         self.phrase_updates: list[list[str]] = []
         self.snapshot_calls: list[str] = []
         self.region_updates: list[tuple[str, DetectionRegion]] = []
+        self.object_detector_updates: list[ObjectDetectorAdapter] = []
+        self._object_detector_adapter = object_detector_adapter
+        self._unavailable_object_adapters = unavailable_object_adapters
+        self._object_detector_error = object_detector_error
         self._snapshot_bytes = snapshot_bytes
         self._snapshot_error = snapshot_error
         self._phrases = ("你好呀，欢迎回来。",)
@@ -124,9 +139,7 @@ class FakeRuntime:
             raise self._snapshot_error
         return self._snapshot_bytes
 
-    async def set_camera_detection_region(
-        self, camera_id: str, region: DetectionRegion
-    ) -> None:
+    async def set_camera_detection_region(self, camera_id: str, region: DetectionRegion) -> None:
         if camera_id not in {camera.stream_id for camera in self._snapshot.cameras}:
             raise KeyError(camera_id)
         self.region_updates.append((camera_id, region))
@@ -148,6 +161,22 @@ class FakeRuntime:
         self.phrase_updates.append(lines)
         self._phrases = normalized
         return normalized
+
+    def object_detector_options(self) -> tuple[ObjectDetectorOption, ...]:
+        return tuple(
+            ObjectDetectorOption(
+                adapter=adapter,
+                available=adapter not in self._unavailable_object_adapters,
+                selected=adapter is self._object_detector_adapter,
+            )
+            for adapter in ObjectDetectorAdapter
+        )
+
+    async def set_object_detector_adapter(self, adapter: ObjectDetectorAdapter) -> None:
+        if self._object_detector_error is not None:
+            raise self._object_detector_error
+        self.object_detector_updates.append(adapter)
+        self._object_detector_adapter = adapter
 
     def snapshot(self) -> RuntimeSnapshot:
         return self._snapshot
@@ -199,9 +228,7 @@ def test_home_omits_region_status_for_full_frame() -> None:
 def test_camera_region_page_renders_editor_for_encoded_camera_id() -> None:
     runtime = FakeRuntime(camera_count=1, camera_ids=("room/a b",))
     with TestClient(create_app(runtime, csrf_token="fixed-token")) as client:
-        response = client.get(
-            f"/camera-region?{urlencode({'camera_id': 'room/a b'})}"
-        )
+        response = client.get(f"/camera-region?{urlencode({'camera_id': 'room/a b'})}")
 
     assert response.status_code == 200
     assert response.headers["cache-control"] == "no-store"
@@ -324,6 +351,70 @@ def test_settings_page_edits_welcome_phrases_and_links_home() -> None:
     assert "你好呀，欢迎回来。" in response.text
     assert 'href="/"' in response.text
     assert 'href="/logs"' in response.text
+
+
+def test_settings_page_shows_the_active_objects365_adapter_and_its_vocabulary() -> None:
+    runtime = FakeRuntime(
+        object_detector_adapter=ObjectDetectorAdapter.OBJECTS365,
+        unavailable_object_adapters=frozenset({ObjectDetectorAdapter.NANODET}),
+    )
+    with TestClient(create_app(runtime, csrf_token="fixed-token")) as client:
+        response = client.get("/settings")
+
+    assert response.status_code == 200
+    assert "Objects365 YOLO26n" in response.text
+    assert "364 个可播报类别" in response.text
+    assert "rabbit" in response.text
+    assert "兔子" in response.text
+    assert re.search(r'name="adapter" value="objects365"[^>]*checked', response.text)
+    assert re.search(r'name="adapter" value="nanodet"[^>]*disabled', response.text)
+
+
+def test_object_detector_command_switches_the_global_adapter() -> None:
+    runtime = FakeRuntime()
+    with TestClient(create_app(runtime, csrf_token="fixed-token")) as client:
+        client.get("/settings")
+        response = client.post(
+            "/commands/object-detector-adapter",
+            data={"csrf_token": "fixed-token", "adapter": "objects365"},
+            headers={"Origin": "http://testserver"},
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/settings"
+    assert runtime.object_detector_updates == [ObjectDetectorAdapter.OBJECTS365]
+
+
+def test_failed_object_detector_switch_keeps_the_previous_selection() -> None:
+    runtime = FakeRuntime(object_detector_error=RuntimeError("object_detector_switch_failed"))
+    with TestClient(create_app(runtime, csrf_token="fixed-token")) as client:
+        client.get("/settings")
+        response = client.post(
+            "/commands/object-detector-adapter",
+            data={"csrf_token": "fixed-token", "adapter": "objects365"},
+            headers={"Origin": "http://testserver"},
+        )
+
+    assert response.status_code == 422
+    assert "模型加载失败，已继续使用原检测器。" in response.text
+    assert re.search(r'name="adapter" value="nanodet"[^>]*checked', response.text)
+    assert runtime.object_detector_updates == []
+
+
+def test_unavailable_object_detector_switch_reports_deployment_error() -> None:
+    runtime = FakeRuntime(object_detector_error=RuntimeError("object_detector_unavailable"))
+    with TestClient(create_app(runtime, csrf_token="fixed-token")) as client:
+        client.get("/settings")
+        response = client.post(
+            "/commands/object-detector-adapter",
+            data={"csrf_token": "fixed-token", "adapter": "objects365"},
+            headers={"Origin": "http://testserver"},
+        )
+
+    assert response.status_code == 422
+    assert "模型文件不可用，请先完成部署。" in response.text
+    assert runtime.object_detector_updates == []
 
 
 def test_disabled_rule_explains_why_video_stream_is_not_running() -> None:
@@ -595,9 +686,7 @@ def test_camera_region_form_save_redirects_to_encoded_editor() -> None:
         ("width", "1.1"),
     ],
 )
-def test_camera_region_rejects_invalid_values_without_writing(
-    field: str, value: str
-) -> None:
+def test_camera_region_rejects_invalid_values_without_writing(field: str, value: str) -> None:
     runtime = FakeRuntime()
     data = {
         "csrf_token": "fixed-token",
@@ -749,6 +838,7 @@ def test_camera_region_last_valid_save_wins() -> None:
             {"camera_id": "front", "speaker_id": "living_room"},
         ),
         ("/commands/welcome-phrases", {"phrases": "你好"}),
+        ("/commands/object-detector-adapter", {"adapter": "objects365"}),
         ("/commands/camera-snapshot", {"camera_id": "front"}),
         (
             "/commands/camera-region",
@@ -779,6 +869,7 @@ def test_all_commands_reject_missing_csrf(path: str, data: dict[str, str]) -> No
             {"camera_id": "front", "speaker_id": "living_room"},
         ),
         ("/commands/welcome-phrases", {"phrases": "你好"}),
+        ("/commands/object-detector-adapter", {"adapter": "objects365"}),
         ("/commands/camera-snapshot", {"camera_id": "front"}),
         (
             "/commands/camera-region",

@@ -1,9 +1,12 @@
 .worktrees/
+.venv/
+*.egg-info/
 .env.poc
 .env.mvp
 artifacts/
 config/poc-devices.json
 deploy/app/state/
+deploy/app/models/
 deploy/go2rtc/state/
 deploy/homeassistant/state/
 deploy/miservice/state/

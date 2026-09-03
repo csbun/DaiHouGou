@@ -1,27 +1,25 @@
-# 通用物体识别 PoC 运行手册
+# Objects365 通用物体检测 PoC 运行手册
 
-本手册只验收“画面变化后识别并播报通用物体”的候选能力。人员进入检测已经属于上一个
-MVP，不是本 PoC 的初始化条件。CLI 默认只加载 NanoDet 物体模型；人员模型和双摄等效负载
-测试属于可选的联调回归。
+本手册验收“画面明显变化后，用固定词表检测绘本中的物体并播报英文类别”。人员进入检测属于
+已有 MVP，不是本 PoC 的前置条件。默认测试只加载物体模型；人员模型仅用于最后的可选联调。
 
-## 1. 先看结论
+Objects365 YOLO26n 是已经训练好的 365 类模型，不需要先训练，也不需要下载完整 Objects365
+数据集。它不是开放世界识别：输入只有画面，不需要提示词，但输出仍限定在模型的 365 类中。
+工程统一排除 `person`，因此可播报 364 类。
 
-测试集可以在开发机完成准备和日常操作，包括：从绘本中截取页面、人工标注、编写
-`manifest.json`、检查路径和类别，以及用本机迭代识别准确率。开发机上的耗时和内存不能作为
-目标机门禁，因为目标机是 i3-3217U、4 GiB、CPU-only，硬件和 OpenCV 版本都会影响结果。
+## 1. 验收路径
 
-因此分成两段：
+1. 在开发机准备至少 30 页私有绘本语料并导出 416x416 ONNX。
+2. 在开发机运行同一 CLI，迭代 manifest 和置信度效果。
+3. 将语料副本和 ONNX 传到 i3-3217U 目标机，执行最终准确率、p95 和 RSS 门禁。
+4. 目标机通过后，把 ONNX 放入 Compose 的外部模型目录，并在管理页选择 Objects365。
 
-1. 在开发机准备并反复验证私有语料，得到可复现的 manifest 和模型文件。
-2. 将经批准的语料副本和模型放到目标机，在目标机执行最终的物体准确率、物体推理 p95、
-   峰值 RSS，以及可选的双摄人员/物体周期门禁。
+开发机的准确率结果可用于迭代，但耗时和内存不能代替目标机结论。不要把绘本图片、完整
+manifest、人物或家庭场景截图提交 Git、上传到第三方服务或写入报告。CLI 只输出聚合指标。
 
-不要把绘本图片、完整 manifest、人物或家庭场景截图提交 Git、上传到第三方服务或放进
-报告。CLI 只输出聚合指标，不保存标注图。
+## 2. 准备私有语料
 
-## 2. 目录和语料要求
-
-CLI 只接受固定的私有目录：
+CLI 只接受仓库外的固定目录：
 
 ```text
 /tmp/daihougou-object-validation/
@@ -31,15 +29,16 @@ CLI 只接受固定的私有目录：
   ...
 ```
 
-目录必须在仓库外。manifest 的最小格式如下，`file` 相对于 manifest 所在目录：
+语料至少 30 页，其中至少 20 页设置非空 `primary`。建议包含单物体、多物体、重复类别、
+不同光线和没有可播报物体的页面，不要重复同一张图片凑数。manifest 示例：
 
 ```json
 {
   "pages": [
     {
       "file": "page-001.jpg",
-      "primary": "cat",
-      "expected": ["cat", "book"]
+      "primary": "rabbit",
+      "expected": ["rabbit", "book"]
     },
     {
       "file": "page-002.jpg",
@@ -50,139 +49,161 @@ CLI 只接受固定的私有目录：
 }
 ```
 
-语料至少 30 页，其中至少 20 页设置非空 `primary`。`primary` 和 `expected` 只能使用
-NanoDet COCO 80 类中的标签；`primary` 必须同时出现在 `expected`。建议覆盖单物体、多物体、
-重复类别、不同光线和没有可播报物体的页面。不要为了凑页数重复同一张图片。
+`file` 必须是相对路径，`primary` 必须同时出现在 `expected`。Objects365 测试中的标签必须
+来自 `OBJECTS365_CATEGORIES`；`person` 虽在模型词表内，但统一策略不会播报。路径穿越、
+绝对路径、软链接逃逸、缺失图片、重复文件名和词表外标签都会被拒绝。
 
-在开发机准备副本并检查数量：
-
-```bash
-mkdir -p /tmp/daihougou-object-validation
-# 将已获授权的页面图片和 manifest 放入上面的目录；不要把原始绘本移走
-test -f /tmp/daihougou-object-validation/manifest.json
-test "$(realpath /tmp/daihougou-object-validation)" = /tmp/daihougou-object-validation
-```
-
-用 CLI 的纯校验函数检查 manifest。这个步骤不会加载模型，也不会读入所有图片像素：
+只校验 manifest，不加载模型：
 
 ```bash
 .venv/bin/python -c '
 from pathlib import Path
 from tools.object_detection_poc import load_manifest
-pages = load_manifest(Path("/tmp/daihougou-object-validation/manifest.json"))
+from daihougou.vision.objects365_detector import OBJECTS365_CATEGORIES
+pages = load_manifest(
+    Path("/tmp/daihougou-object-validation/manifest.json"),
+    categories=OBJECTS365_CATEGORIES,
+    vocabulary_name="Objects365",
+)
 print(f"pages={len(pages)} primary={sum(p.primary is not None for p in pages)}")
 '
 ```
 
-输出应至少为 `pages=30 primary=20`。路径穿越、绝对路径、软链接逃逸、缺失图片、重复文件
-名和不支持类别都会被拒绝。
+输出至少应为 `pages=30 primary=20`。
 
-## 3. 模型下载和校验
+## 3. 在开发机导出模型
 
-NanoDet 使用 OpenCV Zoo 固定提交的预训练 COCO 权重，不需要训练才能初始化或运行。当前
-候选文件和 SHA384 如下：
+导出使用固定版本 `ultralytics==8.4.138`，只安装在 `/tmp` 的一次性环境中。目标机和主应用
+不安装 PyTorch 或 Ultralytics。官方 checkpoint 下载地址与本次校验值：
 
 ```text
-URL: https://media.githubusercontent.com/media/opencv/opencv_zoo/47534e27c9851bb1128ccc0102f1145e27f23f98/models/object_detection_nanodet/object_detection_nanodet_2022nov.onnx
-SHA384: 84ee6a6dd605f7019f25a81615a8fff886b235e8d3924930ca367c6e239a8c6d9c14a7e60b8bae54edca040cbf7b86e7
+URL: https://github.com/ultralytics/assets/releases/download/v8.4.0/yolo26n-objv1-150.pt
+SHA384: 67104718c37bd2277a98390bcf5bf841d36de3db8b92abadb40f4db05e3710433ce8145d62aa6eda373fa79399b506f9
 ```
 
-在需要运行的每台机器单独下载并校验。Linux 使用：
+在仓库根目录执行：
 
 ```bash
+python3 -m venv /tmp/daihougou-objects365-export
+/tmp/daihougou-objects365-export/bin/pip install \
+  ultralytics==8.4.138 onnx==1.19.1
 curl --fail --show-error --location \
-  https://media.githubusercontent.com/media/opencv/opencv_zoo/47534e27c9851bb1128ccc0102f1145e27f23f98/models/object_detection_nanodet/object_detection_nanodet_2022nov.onnx \
-  --output /tmp/object_detection_nanodet_2022nov.onnx
+  https://github.com/ultralytics/assets/releases/download/v8.4.0/yolo26n-objv1-150.pt \
+  --output /tmp/yolo26n-objv1-150.pt
 printf '%s  %s\n' \
-  84ee6a6dd605f7019f25a81615a8fff886b235e8d3924930ca367c6e239a8c6d9c14a7e60b8bae54edca040cbf7b86e7 \
-  /tmp/object_detection_nanodet_2022nov.onnx | sha384sum --check
+  67104718c37bd2277a98390bcf5bf841d36de3db8b92abadb40f4db05e3710433ce8145d62aa6eda373fa79399b506f9 \
+  /tmp/yolo26n-objv1-150.pt | shasum -a 384 -c -
+/tmp/daihougou-objects365-export/bin/python \
+  tools/export_objects365_model.py \
+  --checkpoint /tmp/yolo26n-objv1-150.pt \
+  --output /tmp/object_detection_objects365_yolo26n_416.onnx
 ```
 
-macOS 没有 `sha384sum` 时使用：
+导出脚本固定 `imgsz=416`、FP32、静态输入、opset 17 和 `end2end=False`。最后一项很重要：
+OpenCV DNN 使用 one-to-many 网格输出，不能直接使用 YOLO26 的 end-to-end 图。本次已验证的
+输出形状为 `[1, 369, 3549]`，文件约 9.8 MB。
 
-```bash
-echo '84ee6a6dd605f7019f25a81615a8fff886b235e8d3924930ca367c6e239a8c6d9c14a7e60b8bae54edca040cbf7b86e7  /tmp/object_detection_nanodet_2022nov.onnx' \
-  | shasum -a 384 -c -
-```
+模型与 Ultralytics 工具存在独立许可条件。PoC 文件不提交 Git、不打进应用镜像；在分发或
+商用前由项目负责人确认适用许可。
 
-校验失败时删除该模型并重新下载，不要继续测试。人员模型只在第 5 节的可选联调中使用，
-沿用上一个 MVP 已验证的 `/opt/daihougou/models/person_detection_mediapipe_2023mar.onnx`。
+## 4. 开发机运行 Objects365
 
-## 4. 开发机物品单模型验证
-
-这是默认模式，不需要人员模型，也不需要摄像头。`--camera-count` 默认是 `1`；省略
-`--person-model` 时，CLI 不会构造或预热人员检测器，不会运行人员/物体周期，并且报告中不
-包含 `cycle_p95_ms`。
+这一步不需要人员模型或摄像头：
 
 ```bash
 .venv/bin/python tools/object_detection_poc.py \
+  --adapter objects365 \
   --corpus /tmp/daihougou-object-validation \
-  --object-model /tmp/object_detection_nanodet_2022nov.onnx \
+  --object-model /tmp/object_detection_objects365_yolo26n_416.onnx \
   --output /tmp/object-category-detection-local.json
 ```
 
-退出码含义：
+CLI 会执行与生产相同的统一策略：排除 `person`、过滤占画面至少一半的大面积 `book`、同类
+去重、按置信度排序并最多保留三个英文标签。报告中的 `adapter` 应为 `objects365`。
 
-- `0`：物体准确率、误播报比例、物体推理 p95 和峰值 RSS 均通过。
-- `1`：输入有效且完成测量，但至少一个门禁失败；读取 JSON 中的聚合指标定位问题。
-- `2`：输入无效，例如 manifest、图片、模型缺失，或参数组合非法；这不是一次有效测量。
+退出码：
 
-开发机的 `primary_accuracy` 和 `false_announcement_ratio` 可用于快速发现标注、类别或
-阈值问题。开发机的 `object_p95_ms` 和 `peak_rss_bytes` 只能做趋势参考，不能替代目标机
-结论。报告不会包含页面文件名、路径、预测标签或图片。
+- `0`：全部门禁通过。
+- `1`：完成有效测量，但至少一个门禁失败。
+- `2`：manifest、图片、模型或参数无效，不构成一次有效测量。
 
-## 5. 目标机最终门禁
+## 5. 在 i3 目标机做最终门禁
 
-目标机必须是计划中的 i3-3217U、4 GiB、CPU-only Debian 环境。将语料副本放到目标机的
-同一路径 `/tmp/daihougou-object-validation`，模型也在目标机完成 SHA384 校验。传输绘本
-前先确认数据授权，使用组织批准的加密通道；不要把账号、令牌、DID 或完整家庭画面写入
-命令历史、issue 或报告。
-
-在目标机运行与开发机相同的物品单模型命令：
+通过组织批准的加密通道，将语料副本放到目标机同一路径，并把 ONNX 放到 `/tmp`。在目标机
+重新计算 SHA384，与开发机输出记录比对，然后执行：
 
 ```bash
 python tools/object_detection_poc.py \
+  --adapter objects365 \
   --corpus /tmp/daihougou-object-validation \
-  --object-model /tmp/object_detection_nanodet_2022nov.onnx \
+  --object-model /tmp/object_detection_objects365_yolo26n_416.onnx \
   --output /tmp/object-category-detection-target.json
 ```
 
-只有这次目标机运行才能决定 CPU 推理 p95 和进程峰值 RSS 是否通过。若物品单模型门禁失败，
-停止生产实现，回到模型或类别范围选择。
+门禁固定为：`primary_accuracy >= 0.80`、`false_announcement_ratio < 0.05`、物体推理 p95
+`<= 1000 ms`、峰值 RSS `<= 1 GiB`。只有目标机的这次运行可以确认 i3-3217U 是否可用。
 
-## 6. 可选的人员/物体联调回归
+## 6. 集成主应用
 
-这不是通用物体识别的初始化步骤，只用于确认新旧规则在同一进程、双摄等效负载下仍满足资源
-预算。必须显式提供上一个 MVP 的人员模型，并显式设置双摄：
+目标机门禁通过后，在仓库根目录执行：
+
+```bash
+mkdir -p deploy/app/models
+cp /tmp/object_detection_objects365_yolo26n_416.onnx \
+  deploy/app/models/object_detection_objects365_yolo26n_416.onnx
+chmod 0444 deploy/app/models/object_detection_objects365_yolo26n_416.onnx
+```
+
+在 `.env.mvp` 中设置模型路径：
+
+```dotenv
+OBJECTS365_MODEL=/opt/daihougou/models/custom/object_detection_objects365_yolo26n_416.onnx
+```
+
+Compose 会把 `deploy/app/models` 只读挂载到容器。模型目录同时被 Git 和 Docker build context
+排除，不会进入提交或镜像。重建并重启应用：
+
+```bash
+docker compose -f compose.poc.yaml build app
+docker compose -f compose.poc.yaml up -d app
+docker compose -f compose.poc.yaml logs --tail=100 app
+```
+
+打开“设置”页，在“物体检测器”中选择 `Objects365 YOLO26n` 并应用。选择是全局配置，对所有
+摄像头生效并持久化到 SQLite；应用重启后无需重新选择。切换前会先加载新模型，加载成功后
+再替换当前检测器；失败时页面显示错误、继续使用原检测器，并且不保存失败的选择。未部署
+对应模型文件时，该选项显示为不可用。新数据库默认选择 `NanoDet COCO`。
+
+## 7. 可选的双模型回归
+
+仅在需要确认新旧规则共存资源预算时，显式带入已有人员模型：
 
 ```bash
 python tools/object_detection_poc.py \
+  --adapter objects365 \
   --corpus /tmp/daihougou-object-validation \
-  --object-model /tmp/object_detection_nanodet_2022nov.onnx \
+  --object-model /tmp/object_detection_objects365_yolo26n_416.onnx \
   --person-model /opt/daihougou/models/person_detection_mediapipe_2023mar.onnx \
   --camera-count 2 \
   --output /tmp/object-category-detection-combined.json
 ```
 
-该模式额外输出 `cycle_p95_ms`，并额外检查双模型峰值 RSS 和双摄周期 p95。没有人员模型时
-传入 `--camera-count 2` 会直接返回退出码 `2`，不会偷偷退化成单模型测试。`--camera-count 1`
-可用于单路联调，但不能声称通过双摄门禁。
+该模式额外检查双摄等效周期 p95 `<= 1000 ms`。它不是 Objects365 初始化步骤，也不能替代
+物品单模型门禁。
 
-## 7. 通过条件和清理
+## 8. 清理
 
-门禁阈值固定为：`primary_accuracy >= 0.80`、`false_announcement_ratio < 0.05`、物体
-推理 p95 `<= 1000 ms`、峰值 RSS `<= 1 GiB`。只有可选双摄联调才检查周期 p95 `<= 1000 ms`。
-
-在确认聚合 JSON 已审阅并且需要保留的指标已经抄入脱敏报告后，删除临时副本和下载文件；不
-要删除用户原始绘本：
+记录脱敏聚合指标后，删除临时副本；不要删除用户原始绘本：
 
 ```bash
-rm -f /tmp/object_detection_nanodet_2022nov.onnx
+rm -f /tmp/yolo26n-objv1-150.pt
+rm -f /tmp/object_detection_objects365_yolo26n_416.onnx
 rm -f /tmp/object-category-detection-local.json
 rm -f /tmp/object-category-detection-target.json
 rm -f /tmp/object-category-detection-combined.json
 rm -rf /tmp/daihougou-object-validation
+rm -rf /tmp/daihougou-objects365-export
 ```
 
-如果准确率不足，后续可以针对绘本域做增量标注、类别取舍或 NanoDet 微调。那是提升识别率
-的后续实验，不是本 PoC 的必要初始化训练，也不能用来替代当前固定预训练模型的基线记录。
+若准确率不足，后续可以针对绘本域微调或重新选择类别范围；这属于提升识别率的独立实验，
+不是运行预训练 Objects365 模型的必要初始化操作。

@@ -216,6 +216,65 @@ dd {
   margin-bottom: 18px;
 }
 
+.adapter-form {
+  max-width: 520px;
+}
+
+.adapter-form fieldset {
+  min-width: 0;
+  margin: 0 0 16px;
+  padding: 0;
+  border: 0;
+}
+
+.adapter-segments {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1px;
+  padding: 1px;
+  border: 1px solid #bfc6cb;
+  border-radius: 6px;
+  background: #bfc6cb;
+}
+
+.adapter-option {
+  position: relative;
+  display: grid;
+  min-height: 52px;
+  place-content: center;
+  padding: 8px 12px;
+  color: #30363b;
+  background: #fff;
+  cursor: pointer;
+  text-align: center;
+}
+
+.adapter-option input {
+  position: absolute;
+  opacity: 0;
+}
+
+.adapter-option:has(input:checked) {
+  color: #fff;
+  background: #235b45;
+}
+
+.adapter-option.is-unavailable {
+  color: #747b80;
+  background: #edf0f1;
+  cursor: not-allowed;
+}
+
+.adapter-option small {
+  margin-top: 2px;
+  font-size: 11px;
+}
+
+.adapter-option:has(input:focus-visible) {
+  outline: 3px solid #e3a81b;
+  outline-offset: 2px;
+}
+
 .phrase-form label {
   display: block;
   margin-bottom: 8px;

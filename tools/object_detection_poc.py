@@ -13,7 +13,12 @@ import cv2
 import numpy as np
 
 from daihougou.object_selection import select_announced_objects
+from daihougou.settings import ObjectDetectorAdapter
 from daihougou.vision.object_detector import COCO_CATEGORIES, ObjectDetector
+from daihougou.vision.objects365_detector import (
+    OBJECTS365_CATEGORIES,
+    Objects365ObjectDetector,
+)
 from daihougou.vision.person_detector import PersonDetector
 
 PRIMARY_ACCURACY_GATE = 0.80
@@ -40,7 +45,12 @@ class PageResult:
     latency_ms: int
 
 
-def load_manifest(path: Path) -> tuple[ManifestPage, ...]:
+def load_manifest(
+    path: Path,
+    *,
+    categories: tuple[str, ...] = COCO_CATEGORIES,
+    vocabulary_name: str = "COCO",
+) -> tuple[ManifestPage, ...]:
     """Load a local corpus manifest without allowing any path to escape it."""
     if not path.is_file():
         raise ValueError("manifest is missing")
@@ -73,12 +83,12 @@ def load_manifest(path: Path) -> tuple[ManifestPage, ...]:
         image_path = (path.parent / relative_file).resolve()
         if not image_path.is_relative_to(corpus_root) or not image_path.is_file():
             raise ValueError("manifest image is missing")
-        if primary is not None and (not isinstance(primary, str) or primary not in COCO_CATEGORIES):
-            raise ValueError("manifest primary must be a COCO category")
+        if primary is not None and (not isinstance(primary, str) or primary not in categories):
+            raise ValueError(f"manifest primary must be a {vocabulary_name} category")
         if not isinstance(expected, list) or any(
-            not isinstance(label, str) or label not in COCO_CATEGORIES for label in expected
+            not isinstance(label, str) or label not in categories for label in expected
         ):
-            raise ValueError("manifest expected labels must be COCO categories")
+            raise ValueError(f"manifest expected labels must be {vocabulary_name} categories")
         expected_labels = tuple(expected)
         if primary is not None and primary not in expected_labels:
             raise ValueError("manifest primary must be included in expected labels")
@@ -112,9 +122,9 @@ def evaluate(
     primary_results = tuple(result for result in results if result.primary is not None)
     if not primary_results:
         raise ValueError("metrics require primary pages")
-    primary_accuracy = sum(
-        result.primary in result.predicted for result in primary_results
-    ) / len(primary_results)
+    primary_accuracy = sum(result.primary in result.predicted for result in primary_results) / len(
+        primary_results
+    )
     false_announcement_ratio = sum(
         any(label not in result.expected for label in result.predicted) for result in results
     ) / len(results)
@@ -150,6 +160,11 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace | None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--corpus", type=Path, required=True)
     parser.add_argument("--object-model", type=Path, required=True)
+    parser.add_argument(
+        "--adapter",
+        choices=tuple(adapter.value for adapter in ObjectDetectorAdapter),
+        default=ObjectDetectorAdapter.NANODET.value,
+    )
     parser.add_argument("--person-model", type=Path)
     parser.add_argument("--camera-count", type=int, default=1, choices=(1, 2))
     parser.add_argument("--output", type=Path)
@@ -172,18 +187,28 @@ def _run_benchmark(args: argparse.Namespace) -> dict[str, object]:
     corpus = args.corpus.resolve()
     if corpus != VALIDATION_CORPUS:
         raise ValueError("corpus must use the fixed private validation directory")
+    adapter = ObjectDetectorAdapter(args.adapter)
+    categories = (
+        OBJECTS365_CATEGORIES if adapter is ObjectDetectorAdapter.OBJECTS365 else COCO_CATEGORIES
+    )
     manifest_path = corpus / "manifest.json"
-    pages = load_manifest(manifest_path)
+    pages = load_manifest(
+        manifest_path,
+        categories=categories,
+        vocabulary_name="Objects365" if adapter is ObjectDetectorAdapter.OBJECTS365 else "COCO",
+    )
     if not args.object_model.is_file():
         raise ValueError("model is missing")
     if args.camera_count == 2 and args.person_model is None:
         raise ValueError("camera-count 2 requires a person model")
     if args.person_model is not None and not args.person_model.is_file():
         raise ValueError("model is missing")
-    object_detector = ObjectDetector(args.object_model)
-    person_detector = (
-        PersonDetector(args.person_model) if args.person_model is not None else None
+    object_detector = (
+        Objects365ObjectDetector(args.object_model)
+        if adapter is ObjectDetectorAdapter.OBJECTS365
+        else ObjectDetector(args.object_model)
     )
+    person_detector = PersonDetector(args.person_model) if args.person_model is not None else None
 
     warmup_frame = _read_frame(corpus, pages[0])
     for _ in range(3):
@@ -226,9 +251,13 @@ def _run_benchmark(args: argparse.Namespace) -> dict[str, object]:
                     detected, frame_width=frame.shape[1], frame_height=frame.shape[0]
                 )
             cycles.append(round((time.monotonic() - started) * 1000))
-    return evaluate(
-        tuple(results), peak_rss_bytes=peak_rss_bytes(), cycle_ms=None if cycles is None else tuple(cycles)
+    report = evaluate(
+        tuple(results),
+        peak_rss_bytes=peak_rss_bytes(),
+        cycle_ms=None if cycles is None else tuple(cycles),
     )
+    report["adapter"] = adapter.value
+    return report
 
 
 def main(argv: list[str] | None = None) -> int:

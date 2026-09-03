@@ -26,6 +26,7 @@ services:
       PYTHONUNBUFFERED: "1"
     volumes:
       - ./deploy/app/state:/var/lib/daihougou/data
+      - ./deploy/app/models:/opt/daihougou/models/custom:ro
       - ./deploy/miservice/state:/var/lib/daihougou/mi
     healthcheck:
       test: ["CMD", "python", "-m", "daihougou.healthcheck"]
