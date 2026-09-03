@@ -18,6 +18,8 @@ def test_snapshot_command_captures_one_uncropped_bounded_jpeg() -> None:
 
     assert command[:4] == ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel"]
     assert command[command.index("-rtsp_transport") + 1] == "tcp"
+    assert command[command.index("-skip_frame") + 1] == "nokey"
+    assert command.index("-skip_frame") < command.index("-i")
     assert command[command.index("-i") + 1] == url
     assert command[command.index("-frames:v") + 1] == "1"
     assert command[command.index("-c:v") + 1] == "mjpeg"

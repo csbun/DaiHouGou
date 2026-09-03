@@ -21,6 +21,8 @@ def build_snapshot_command(rtsp_url: str) -> list[str]:
         "error",
         "-rtsp_transport",
         "tcp",
+        "-skip_frame",
+        "nokey",
         "-i",
         rtsp_url,
         "-an",
