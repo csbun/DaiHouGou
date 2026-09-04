@@ -1,4 +1,6 @@
+import asyncio
 import json
+import os
 import sqlite3
 from pathlib import Path
 
@@ -13,7 +15,14 @@ from guduck.rules import (
     WELCOME_RULE_ID,
 )
 from guduck.settings import ObjectDetectorAdapter
-from guduck.storage import SCHEMA_VERSION, EventRecord, IncompatibleSchemaError, Storage
+from guduck.storage import (
+    SCHEMA_VERSION,
+    DatabaseTokenStore,
+    DiscoveredSpeaker,
+    EventRecord,
+    IncompatibleSchemaError,
+    Storage,
+)
 
 EXPECTED_ENGLISH_WELCOME_PHRASES = (
     "Welcome home!",
@@ -95,6 +104,87 @@ def create_v2_database(path: Path) -> None:
                 WELCOME_RULE_ID,
                 "front",
                 "bedroom",
+                1,
+                10,
+                "{}",
+            ),
+        )
+
+
+def create_v3_database(path: Path) -> None:
+    with sqlite3.connect(path) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE cameras (
+                stream_id TEXT PRIMARY KEY,
+                speaker_id TEXT NOT NULL,
+                first_seen_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL,
+                region_x REAL NOT NULL DEFAULT 0,
+                region_y REAL NOT NULL DEFAULT 0,
+                region_width REAL NOT NULL DEFAULT 1,
+                region_height REAL NOT NULL DEFAULT 1
+            );
+            CREATE TABLE camera_rules (
+                camera_id TEXT NOT NULL REFERENCES cameras(stream_id),
+                rule_id TEXT NOT NULL,
+                enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (camera_id, rule_id)
+            );
+            CREATE TABLE rule_configs (
+                rule_id TEXT PRIMARY KEY,
+                config_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                occurred_at TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                rule_id TEXT,
+                camera_id TEXT,
+                speaker_id TEXT,
+                success INTEGER NOT NULL CHECK (success IN (0, 1)),
+                latency_ms INTEGER,
+                details_json TEXT NOT NULL
+            );
+            PRAGMA user_version = 3;
+            """
+        )
+        connection.execute(
+            "INSERT INTO cameras VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "front",
+                "legacy-living-room",
+                "2026-01-01T00:00:00+00:00",
+                "2026-01-01T00:00:00+00:00",
+                0.1,
+                0.2,
+                0.7,
+                0.6,
+            ),
+        )
+        connection.execute(
+            "INSERT INTO camera_rules VALUES (?, ?, ?, ?)",
+            ("front", WELCOME_RULE_ID, 1, "2026-01-01T00:00:00+00:00"),
+        )
+        connection.execute(
+            "INSERT INTO rule_configs VALUES (?, ?, ?)",
+            (WELCOME_RULE_ID, json.dumps(("Custom welcome",)), "2026-01-01T00:00:00+00:00"),
+        )
+        connection.execute(
+            """
+            INSERT INTO events(
+                occurred_at, kind, rule_id, camera_id, speaker_id, success,
+                latency_ms, details_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "2026-01-01T00:00:00+00:00",
+                "existing_event",
+                WELCOME_RULE_ID,
+                "front",
+                "legacy-living-room",
                 1,
                 10,
                 "{}",
@@ -355,3 +445,171 @@ def test_new_camera_gets_every_builtin_rule_disabled(tmp_path: Path) -> None:
         WELCOME_RULE_ID: False,
         OBJECT_RULE_ID: False,
     }
+
+
+def test_new_database_has_xiaomi_tables_nullable_speaker_and_private_permissions(
+    tmp_path: Path,
+) -> None:
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(mode=0o755)
+    path = data_dir / "app.db"
+
+    Storage(path).initialize()
+
+    with sqlite3.connect(path) as connection:
+        tables = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+            )
+        }
+        speaker_column = next(
+            row for row in connection.execute("PRAGMA table_info(cameras)") if row[1] == "speaker_id"
+        )
+    assert tables == {
+        "cameras",
+        "camera_rules",
+        "rule_configs",
+        "events",
+        "xiaomi_account",
+        "speaker_bindings",
+    }
+    assert speaker_column[3] == 0
+    assert os.stat(data_dir).st_mode & 0o777 == 0o700
+    assert os.stat(path).st_mode & 0o777 == 0o600
+
+
+def test_initialize_migrates_v3_and_preserves_legacy_data(tmp_path: Path) -> None:
+    path = tmp_path / "app.db"
+    create_v3_database(path)
+
+    storage = Storage(path)
+    storage.initialize()
+
+    camera = storage.list_cameras()[0]
+    assert camera.speaker_id == "legacy-living-room"
+    assert camera.detection_region == DetectionRegion(0.1, 0.2, 0.7, 0.6)
+    assert storage.camera_rule_enabled("front", WELCOME_RULE_ID) is True
+    assert storage.welcome_phrases() == ("Custom welcome",)
+    assert storage.recent_events()[0].speaker_id == "legacy-living-room"
+    assert storage.list_speaker_bindings() == []
+    assert storage.get_xiaomi_account() is None
+
+
+def test_database_token_store_uses_username_and_supports_save_load_clear(tmp_path: Path) -> None:
+    storage = Storage(tmp_path / "app.db")
+    storage.initialize()
+    store = DatabaseTokenStore(storage, " owner@example.test ")
+    token = {"userId": "private", "micoapi": ["security", "service-token"]}
+
+    asyncio.run(store.save_token(token))
+
+    account = storage.get_xiaomi_account()
+    assert account is not None
+    assert account.username == "owner@example.test"
+    assert asyncio.run(store.load_token()) == token
+
+    asyncio.run(store.save_token())
+    assert storage.get_xiaomi_account() is None
+    assert asyncio.run(store.load_token()) is None
+    with pytest.raises(ValueError, match="username"):
+        DatabaseTokenStore(storage, " ")
+
+
+def test_discovery_preserves_binding_identity_and_custom_name_and_marks_missing(
+    tmp_path: Path,
+) -> None:
+    storage = Storage(tmp_path / "app.db")
+    storage.initialize()
+    original = storage.upsert_discovered_speakers(
+        [
+            DiscoveredSpeaker("device-a", "客厅", "L05C", "miot-a"),
+            DiscoveredSpeaker("device-b", "卧室", "LX04", "miot-b"),
+        ]
+    )
+    by_device = {binding.device_id: binding for binding in original}
+    device_a_binding_id = by_device["device-a"].binding_id
+    storage.set_speaker_display_name(device_a_binding_id, "门口音箱")
+    storage.save_speaker_bindings([device_a_binding_id])
+
+    refreshed = storage.upsert_discovered_speakers(
+        [DiscoveredSpeaker("device-a", "客厅新名称", "L05C", "miot-a-new")]
+    )
+    by_device = {binding.device_id: binding for binding in refreshed}
+
+    assert by_device["device-a"].binding_id == device_a_binding_id
+    assert by_device["device-a"].display_name == "门口音箱"
+    assert by_device["device-a"].mina_name == "客厅新名称"
+    assert by_device["device-a"].miot_did == "miot-a-new"
+    assert by_device["device-a"].bound is True
+    assert by_device["device-a"].available is True
+    assert by_device["device-b"].available is False
+
+
+def test_binding_save_requires_scoped_exact_one_time_confirmation(tmp_path: Path) -> None:
+    now = [100.0]
+    storage = Storage(tmp_path / "app.db", clock=lambda: now[0])
+    storage.initialize()
+    bindings = storage.upsert_discovered_speakers(
+        [
+            DiscoveredSpeaker("device-a", "客厅", "L05C", None),
+            DiscoveredSpeaker("device-b", "卧室", "LX04", None),
+        ]
+    )
+    first, second = bindings
+    storage.save_speaker_bindings([first.binding_id, second.binding_id])
+    storage.sync_cameras(["back", "front"])
+    storage.set_camera_speaker("front", first.binding_id)
+    storage.set_camera_speaker("back", second.binding_id)
+
+    preview = storage.save_speaker_bindings([second.binding_id])
+    repeated = storage.save_speaker_bindings([second.binding_id])
+
+    assert preview.saved is False
+    assert preview.confirmation_id is not None
+    assert repeated.confirmation_id == preview.confirmation_id
+    assert preview.affected_camera_ids == ("front",)
+    assert storage.camera_speaker_id("front") == first.binding_id
+
+    with pytest.raises(ValueError, match="confirmation"):
+        storage.save_speaker_bindings([second.binding_id], "arbitrary")
+    confirmed = storage.save_speaker_bindings(
+        [second.binding_id],
+        preview.confirmation_id,
+    )
+
+    assert confirmed.saved is True
+    assert confirmed.confirmation_id is None
+    assert confirmed.affected_camera_ids == ("front",)
+    assert storage.camera_speaker_id("front") is None
+    assert storage.camera_speaker_id("back") == second.binding_id
+    after = {binding.binding_id: binding for binding in storage.list_speaker_bindings()}
+    assert after[first.binding_id].bound is False
+    assert after[first.binding_id].available is False
+    assert after[second.binding_id].bound is True
+    with pytest.raises(ValueError, match="confirmation"):
+        storage.save_speaker_bindings([second.binding_id], preview.confirmation_id)
+
+
+def test_binding_confirmation_expires_and_unknown_binding_is_rejected(tmp_path: Path) -> None:
+    now = [100.0]
+    storage = Storage(
+        tmp_path / "app.db",
+        clock=lambda: now[0],
+        confirmation_ttl_seconds=10,
+    )
+    storage.initialize()
+    binding = storage.upsert_discovered_speakers(
+        [DiscoveredSpeaker("device-a", "客厅", "L05C", None)]
+    )[0]
+    storage.save_speaker_bindings([binding.binding_id])
+    storage.sync_cameras(["front"])
+    storage.set_camera_speaker("front", binding.binding_id)
+    preview = storage.save_speaker_bindings([])
+    now[0] = 111.0
+
+    with pytest.raises(ValueError, match="confirmation"):
+        storage.save_speaker_bindings([], preview.confirmation_id)
+    assert storage.camera_speaker_id("front") == binding.binding_id
+    with pytest.raises(ValueError, match="unknown speaker binding"):
+        storage.save_speaker_bindings(["missing"])

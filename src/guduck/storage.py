@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
+import time
 import uuid
-from collections.abc import Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 from guduck.detection_region import DetectionRegion
 from guduck.redaction import redact
@@ -20,7 +22,8 @@ from guduck.rules import (
 from guduck.settings import ObjectDetectorAdapter
 
 SCHEMA_VERSION = 4
-_SCHEMA_TABLES = frozenset({"camera_rules", "cameras", "events", "rule_configs", "xiaomi_account", "speaker_bindings"})
+_LEGACY_TABLES = frozenset({"camera_rules", "cameras", "events", "rule_configs"})
+_SCHEMA_TABLES = _LEGACY_TABLES | {"xiaomi_account", "speaker_bindings"}
 _CAMERA_COLUMNS = frozenset(
     {
         "stream_id",
@@ -119,12 +122,14 @@ class XiaomiAccount:
     token_json: str
     updated_at: str
 
+
 @dataclass(frozen=True)
 class DiscoveredSpeaker:
     device_id: str
     mina_name: str
     hardware: str
     miot_did: str | None
+
 
 @dataclass(frozen=True)
 class SpeakerBinding:
@@ -140,31 +145,59 @@ class SpeakerBinding:
     test_status: str
     updated_at: str
 
+
 @dataclass(frozen=True)
 class BindingSaveResult:
     saved: bool
     confirmation_id: str | None
     affected_camera_ids: tuple[str, ...]
 
+
 @dataclass(frozen=True)
 class TestResult:
     success: bool
 
 
-class DatabaseTokenStore:
-    def __init__(self, storage: "Storage") -> None:
-        self._storage = storage
+@dataclass(frozen=True)
+class _BindingConfirmation:
+    selected_ids: frozenset[str]
+    removed_ids: frozenset[str]
+    affected_camera_ids: tuple[str, ...]
+    expires_at: float
 
-    async def load(self) -> dict[str, object] | None:
+
+class DatabaseTokenStore:
+    def __init__(self, storage: Storage, username: str) -> None:
+        username = username.strip()
+        if not username:
+            raise ValueError("xiaomi username is required")
+        self._storage = storage
+        self._username = username
+
+    async def load_token(self) -> dict[str, object] | None:
         account = self._storage.get_xiaomi_account()
         if account is None:
             return None
-        value = json.loads(account.token_json)
+        try:
+            value = json.loads(account.token_json)
+        except json.JSONDecodeError:
+            return None
         return value if isinstance(value, dict) else None
 
+    async def save_token(self, token: Mapping[str, object] | None = None) -> None:
+        if token is None:
+            self._storage.clear_xiaomi_account()
+            return
+        self._storage.save_xiaomi_account(
+            self._username,
+            json.dumps(dict(token), ensure_ascii=False),
+        )
+
+    async def load(self) -> dict[str, object] | None:
+        return await self.load_token()
+
     async def save(self, token: Mapping[str, object]) -> None:
-        account = self._storage.get_xiaomi_account()
-        self._storage.save_xiaomi_account(account.username if account else "", json.dumps(dict(token), ensure_ascii=False))
+        await self.save_token(token)
 
 
 def normalize_welcome_phrases(lines: list[str] | tuple[str, ...]) -> tuple[str, ...]:
@@ -179,9 +212,19 @@ def normalize_welcome_phrases(lines: list[str] | tuple[str, ...]) -> tuple[str, 
 
 
 class Storage:
-    def __init__(self, path: Path, max_events: int = 5000) -> None:
+    def __init__(
+        self,
+        path: Path,
+        max_events: int = 5000,
+        *,
+        clock: Callable[[], float] = time.monotonic,
+        confirmation_ttl_seconds: float = 300.0,
+    ) -> None:
         self._path = path
         self._max_events = max_events
+        self._clock = clock
+        self._confirmation_ttl_seconds = confirmation_ttl_seconds
+        self._binding_confirmations: dict[str, _BindingConfirmation] = {}
 
     def _connect(self, *, enable_wal: bool = True) -> sqlite3.Connection:
         connection = sqlite3.connect(self._path, timeout=5)
@@ -194,6 +237,7 @@ class Storage:
 
     def initialize(self) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
+        self._protect_path(self._path.parent, 0o700)
         with self._connect(enable_wal=False) as connection:
             schema_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
             table_names = {
@@ -257,7 +301,7 @@ class Storage:
                 )
                 schema_version = 4
                 table_names = _SCHEMA_TABLES
-            elif schema_version == 2 and table_names == frozenset({"camera_rules", "cameras", "events", "rule_configs"}):
+            elif schema_version == 2 and table_names == _LEGACY_TABLES:
                 if not self._schema_matches(connection, _V2_TABLE_DEFINITIONS):
                     raise IncompatibleSchemaError(
                         "incompatible database; reset the database using the runbook"
@@ -282,24 +326,84 @@ class Storage:
                     connection.rollback()
                     raise
             if schema_version == 3:
-                if table_names != frozenset({"camera_rules", "cameras", "events", "rule_configs"}) or not self._schema_matches(connection, _V3_TABLE_DEFINITIONS):
-                    raise IncompatibleSchemaError("incompatible database; reset the database using the runbook")
+                if table_names != _LEGACY_TABLES or not self._schema_matches(
+                    connection, _V3_TABLE_DEFINITIONS
+                ):
+                    raise IncompatibleSchemaError(
+                        "incompatible database; reset the database using the runbook"
+                    )
                 connection.commit()
                 connection.execute("BEGIN")
                 try:
                     connection.execute("ALTER TABLE cameras RENAME TO cameras_old")
                     connection.execute("ALTER TABLE camera_rules RENAME TO camera_rules_old")
-                    connection.execute("""CREATE TABLE cameras (stream_id TEXT PRIMARY KEY, speaker_id TEXT, first_seen_at TEXT NOT NULL, last_seen_at TEXT NOT NULL, region_x REAL NOT NULL DEFAULT 0, region_y REAL NOT NULL DEFAULT 0, region_width REAL NOT NULL DEFAULT 1, region_height REAL NOT NULL DEFAULT 1)""")
-                    connection.execute("INSERT INTO cameras SELECT stream_id,speaker_id,first_seen_at,last_seen_at,region_x,region_y,region_width,region_height FROM cameras_old")
-                    connection.execute("""CREATE TABLE camera_rules (camera_id TEXT NOT NULL REFERENCES cameras(stream_id), rule_id TEXT NOT NULL, enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)), updated_at TEXT NOT NULL, PRIMARY KEY (camera_id, rule_id))""")
+                    connection.execute(
+                        """
+                        CREATE TABLE cameras (
+                            stream_id TEXT PRIMARY KEY,
+                            speaker_id TEXT,
+                            first_seen_at TEXT NOT NULL,
+                            last_seen_at TEXT NOT NULL,
+                            region_x REAL NOT NULL DEFAULT 0,
+                            region_y REAL NOT NULL DEFAULT 0,
+                            region_width REAL NOT NULL DEFAULT 1,
+                            region_height REAL NOT NULL DEFAULT 1
+                        )
+                        """
+                    )
+                    connection.execute(
+                        """
+                        INSERT INTO cameras
+                        SELECT stream_id, speaker_id, first_seen_at, last_seen_at,
+                               region_x, region_y, region_width, region_height
+                        FROM cameras_old
+                        """
+                    )
+                    connection.execute(
+                        """
+                        CREATE TABLE camera_rules (
+                            camera_id TEXT NOT NULL REFERENCES cameras(stream_id),
+                            rule_id TEXT NOT NULL,
+                            enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+                            updated_at TEXT NOT NULL,
+                            PRIMARY KEY (camera_id, rule_id)
+                        )
+                        """
+                    )
                     connection.execute("INSERT INTO camera_rules SELECT * FROM camera_rules_old")
                     connection.execute("DROP TABLE camera_rules_old")
                     connection.execute("DROP TABLE cameras_old")
-                    connection.execute("""CREATE TABLE xiaomi_account (id INTEGER PRIMARY KEY CHECK (id = 1), username TEXT NOT NULL, token_json TEXT NOT NULL, updated_at TEXT NOT NULL)""")
-                    connection.execute("""CREATE TABLE speaker_bindings (binding_id TEXT PRIMARY KEY, device_id TEXT NOT NULL UNIQUE, display_name TEXT NOT NULL, mina_name TEXT NOT NULL, hardware TEXT NOT NULL, miot_did TEXT, last_seen_at TEXT, bound INTEGER NOT NULL CHECK (bound IN (0, 1)), available INTEGER NOT NULL CHECK (available IN (0, 1)), test_status TEXT NOT NULL, updated_at TEXT NOT NULL)""")
+                    connection.execute(
+                        """
+                        CREATE TABLE xiaomi_account (
+                            id INTEGER PRIMARY KEY CHECK (id = 1),
+                            username TEXT NOT NULL,
+                            token_json TEXT NOT NULL,
+                            updated_at TEXT NOT NULL
+                        )
+                        """
+                    )
+                    connection.execute(
+                        """
+                        CREATE TABLE speaker_bindings (
+                            binding_id TEXT PRIMARY KEY,
+                            device_id TEXT NOT NULL UNIQUE,
+                            display_name TEXT NOT NULL,
+                            mina_name TEXT NOT NULL,
+                            hardware TEXT NOT NULL,
+                            miot_did TEXT,
+                            last_seen_at TEXT,
+                            bound INTEGER NOT NULL CHECK (bound IN (0, 1)),
+                            available INTEGER NOT NULL CHECK (available IN (0, 1)),
+                            test_status TEXT NOT NULL,
+                            updated_at TEXT NOT NULL
+                        )
+                        """
+                    )
                     connection.execute("PRAGMA user_version = 4")
                 except Exception:
-                    connection.rollback(); raise
+                    connection.rollback()
+                    raise
                 table_names = _SCHEMA_TABLES
                 schema_version = 4
             if schema_version != SCHEMA_VERSION or table_names != _SCHEMA_TABLES:
@@ -357,6 +461,7 @@ class Storage:
                 [(rule_id, self._now()) for rule_id in BUILTIN_RULE_IDS],
             )
             self._prune(connection)
+        self._protect_path(self._path, 0o600)
 
     def sync_cameras(
         self, stream_ids: Sequence[str], default_speaker_id: str | None = None
@@ -549,11 +654,32 @@ class Storage:
     def get_xiaomi_account(self) -> XiaomiAccount | None:
         with self._connect() as connection:
             row = connection.execute("SELECT * FROM xiaomi_account WHERE id = 1").fetchone()
-        return None if row is None else XiaomiAccount(row["id"], row["username"], row["token_json"], row["updated_at"])
+        return (
+            None
+            if row is None
+            else XiaomiAccount(
+                row["id"],
+                row["username"],
+                row["token_json"],
+                row["updated_at"],
+            )
+        )
 
     def save_xiaomi_account(self, username: str, token_json: str) -> None:
+        if not username.strip():
+            raise ValueError("xiaomi username is required")
         with self._connect() as connection:
-            connection.execute("INSERT INTO xiaomi_account(id,username,token_json,updated_at) VALUES (1,?,?,?) ON CONFLICT(id) DO UPDATE SET username=excluded.username,token_json=excluded.token_json,updated_at=excluded.updated_at", (username, token_json, self._now()))
+            connection.execute(
+                """
+                INSERT INTO xiaomi_account(id, username, token_json, updated_at)
+                VALUES (1, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    username = excluded.username,
+                    token_json = excluded.token_json,
+                    updated_at = excluded.updated_at
+                """,
+                (username.strip(), token_json, self._now()),
+            )
 
     def clear_xiaomi_account(self) -> None:
         with self._connect() as connection:
@@ -561,43 +687,238 @@ class Storage:
 
     def list_speaker_bindings(self) -> list[SpeakerBinding]:
         with self._connect() as connection:
-            rows = connection.execute("SELECT * FROM speaker_bindings ORDER BY binding_id").fetchall()
+            rows = connection.execute(
+                "SELECT * FROM speaker_bindings ORDER BY binding_id"
+            ).fetchall()
         return [self._speaker_binding(row) for row in rows]
 
-    def upsert_discovered_speakers(self, devices: Sequence[DiscoveredSpeaker]) -> list[SpeakerBinding]:
+    def upsert_discovered_speakers(
+        self, devices: Sequence[DiscoveredSpeaker]
+    ) -> list[SpeakerBinding]:
         now = self._now()
         with self._connect() as connection:
-            seen = set()
+            seen: set[str] = set()
             for device in devices:
+                if not device.device_id:
+                    raise ValueError("speaker device id is required")
+                if device.device_id in seen:
+                    raise ValueError("speaker device ids must be unique")
                 seen.add(device.device_id)
-                row = connection.execute("SELECT binding_id FROM speaker_bindings WHERE device_id = ?", (device.device_id,)).fetchone()
+                row = connection.execute(
+                    "SELECT binding_id FROM speaker_bindings WHERE device_id = ?",
+                    (device.device_id,),
+                ).fetchone()
                 if row:
-                    connection.execute("UPDATE speaker_bindings SET mina_name=?,hardware=?,miot_did=?,last_seen_at=?,available=1,updated_at=? WHERE device_id=?", (device.mina_name, device.hardware, device.miot_did, now, now, device.device_id))
+                    connection.execute(
+                        """
+                        UPDATE speaker_bindings
+                        SET mina_name = ?, hardware = ?, miot_did = ?, last_seen_at = ?,
+                            available = 1, updated_at = ?
+                        WHERE device_id = ?
+                        """,
+                        (
+                            device.mina_name,
+                            device.hardware,
+                            device.miot_did,
+                            now,
+                            now,
+                            device.device_id,
+                        ),
+                    )
                 else:
-                    connection.execute("INSERT INTO speaker_bindings VALUES (?,?,?,?,?,?,?,?,?,?,?)", (str(uuid.uuid4()), device.device_id, device.mina_name, device.mina_name, device.hardware, device.miot_did, now, 0, 1, "unknown", now))
+                    connection.execute(
+                        """
+                        INSERT INTO speaker_bindings(
+                            binding_id, device_id, display_name, mina_name, hardware,
+                            miot_did, last_seen_at, bound, available, test_status, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, 1, 'unknown', ?)
+                        """,
+                        (
+                            str(uuid.uuid4()),
+                            device.device_id,
+                            device.mina_name,
+                            device.mina_name,
+                            device.hardware,
+                            device.miot_did,
+                            now,
+                            now,
+                        ),
+                    )
             if seen:
-                connection.execute("UPDATE speaker_bindings SET available=0,updated_at=? WHERE bound=1 AND device_id NOT IN (%s)" % ",".join("?" * len(seen)), (now, *seen))
+                placeholders = ",".join("?" for _ in seen)
+                connection.execute(
+                    f"""
+                    UPDATE speaker_bindings SET available = 0, updated_at = ?
+                    WHERE device_id NOT IN ({placeholders})
+                    """,
+                    (now, *sorted(seen)),
+                )
             else:
-                connection.execute("UPDATE speaker_bindings SET available=0,updated_at=? WHERE bound=1", (now,))
+                connection.execute(
+                    "UPDATE speaker_bindings SET available = 0, updated_at = ?",
+                    (now,),
+                )
         return self.list_speaker_bindings()
 
-    def save_speaker_bindings(self, selected_binding_ids: Sequence[str], confirmation_id: str | None = None) -> BindingSaveResult:
-        selected = set(selected_binding_ids)
+    def set_speaker_display_name(self, binding_id: str, display_name: str) -> None:
+        display_name = display_name.strip()
+        if not 1 <= len(display_name) <= 50:
+            raise ValueError("speaker display name is invalid")
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE speaker_bindings SET display_name = ?, updated_at = ?
+                WHERE binding_id = ?
+                """,
+                (display_name, self._now(), binding_id),
+            )
+            if cursor.rowcount != 1:
+                raise KeyError(binding_id)
+
+    def set_speaker_test_status(self, binding_id: str, status: str) -> None:
+        if status not in {"unknown", "success", "failure"}:
+            raise ValueError("speaker test status is invalid")
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE speaker_bindings SET test_status = ?, updated_at = ?
+                WHERE binding_id = ?
+                """,
+                (status, self._now(), binding_id),
+            )
+            if cursor.rowcount != 1:
+                raise KeyError(binding_id)
+
+    def save_speaker_bindings(
+        self,
+        selected_binding_ids: Sequence[str],
+        confirmation_id: str | None = None,
+    ) -> BindingSaveResult:
+        selected = frozenset(selected_binding_ids)
+        if len(selected) != len(selected_binding_ids):
+            raise ValueError("speaker binding ids must be unique")
         with self._connect() as connection:
             rows = connection.execute("SELECT * FROM speaker_bindings").fetchall()
             known = {str(row["binding_id"]): row for row in rows}
             if not selected <= known.keys():
                 raise ValueError("unknown speaker binding")
-            affected = tuple(sorted(str(row["stream_id"]) for row in connection.execute("SELECT stream_id FROM cameras WHERE speaker_id IN (SELECT device_id FROM speaker_bindings WHERE bound=1)").fetchall()))
-            unbinding = any(bool(row["bound"]) and bid not in selected for bid, row in known.items())
-            if unbinding and confirmation_id is None:
-                return BindingSaveResult(False, uuid.uuid4().hex, affected)
-            connection.execute("UPDATE speaker_bindings SET bound=0,updated_at=?", (self._now(),))
+            removed = frozenset(
+                binding_id
+                for binding_id, row in known.items()
+                if bool(row["bound"]) and binding_id not in selected
+            )
+            affected = self._affected_camera_ids(connection, removed)
+            self._discard_expired_confirmations()
+            if affected:
+                if confirmation_id is None:
+                    issued = self._find_confirmation(selected, removed, affected)
+                    if issued is None:
+                        issued = uuid.uuid4().hex
+                        self._binding_confirmations[issued] = _BindingConfirmation(
+                            selected,
+                            removed,
+                            affected,
+                            self._clock() + self._confirmation_ttl_seconds,
+                        )
+                    return BindingSaveResult(False, issued, affected)
+                self._consume_confirmation(confirmation_id, selected, removed, affected)
+            elif confirmation_id is not None:
+                raise ValueError("invalid binding confirmation")
+
+            now = self._now()
+            connection.execute(
+                "UPDATE speaker_bindings SET bound = 0, updated_at = ?",
+                (now,),
+            )
             if selected:
-                connection.execute("UPDATE speaker_bindings SET bound=1,updated_at=? WHERE binding_id IN (%s)" % ",".join("?" * len(selected)), (self._now(), *selected))
-            if unbinding:
-                connection.execute("UPDATE cameras SET speaker_id=NULL WHERE speaker_id IN (SELECT device_id FROM speaker_bindings WHERE bound=0)")
-            return BindingSaveResult(True, confirmation_id, affected if unbinding else ())
+                placeholders = ",".join("?" for _ in selected)
+                connection.execute(
+                    f"""
+                    UPDATE speaker_bindings SET bound = 1, updated_at = ?
+                    WHERE binding_id IN ({placeholders})
+                    """,
+                    (now, *sorted(selected)),
+                )
+            if removed:
+                placeholders = ",".join("?" for _ in removed)
+                connection.execute(
+                    f"""
+                    UPDATE speaker_bindings SET available = 0, updated_at = ?
+                    WHERE binding_id IN ({placeholders})
+                    """,
+                    (now, *sorted(removed)),
+                )
+            if affected:
+                placeholders = ",".join("?" for _ in removed)
+                connection.execute(
+                    f"""
+                    UPDATE cameras SET speaker_id = NULL
+                    WHERE speaker_id IN ({placeholders})
+                    """,
+                    tuple(sorted(removed)),
+                )
+            return BindingSaveResult(True, None, affected)
+
+    @staticmethod
+    def _affected_camera_ids(
+        connection: sqlite3.Connection, removed_ids: frozenset[str]
+    ) -> tuple[str, ...]:
+        if not removed_ids:
+            return ()
+        placeholders = ",".join("?" for _ in removed_ids)
+        rows = connection.execute(
+            f"""
+            SELECT stream_id FROM cameras
+            WHERE speaker_id IN ({placeholders})
+            ORDER BY stream_id
+            """,
+            tuple(sorted(removed_ids)),
+        ).fetchall()
+        return tuple(str(row["stream_id"]) for row in rows)
+
+    def _discard_expired_confirmations(self) -> None:
+        now = self._clock()
+        self._binding_confirmations = {
+            token: confirmation
+            for token, confirmation in self._binding_confirmations.items()
+            if confirmation.expires_at > now
+        }
+
+    def _find_confirmation(
+        self,
+        selected_ids: frozenset[str],
+        removed_ids: frozenset[str],
+        affected_camera_ids: tuple[str, ...],
+    ) -> str | None:
+        expected = (selected_ids, removed_ids, affected_camera_ids)
+        return next(
+            (
+                token
+                for token, confirmation in self._binding_confirmations.items()
+                if (
+                    confirmation.selected_ids,
+                    confirmation.removed_ids,
+                    confirmation.affected_camera_ids,
+                )
+                == expected
+            ),
+            None,
+        )
+
+    def _consume_confirmation(
+        self,
+        token: str,
+        selected_ids: frozenset[str],
+        removed_ids: frozenset[str],
+        affected_camera_ids: tuple[str, ...],
+    ) -> None:
+        confirmation = self._binding_confirmations.pop(token, None)
+        if confirmation is None or (
+            confirmation.selected_ids,
+            confirmation.removed_ids,
+            confirmation.affected_camera_ids,
+        ) != (selected_ids, removed_ids, affected_camera_ids):
+            raise ValueError("invalid binding confirmation")
 
     def journal_mode(self) -> str:
         with self._connect() as connection:
@@ -611,6 +932,13 @@ class Storage:
         actual = {str(row["name"]): "".join(str(row["sql"]).lower().split()) for row in rows}
         normalized_expected = {name: "".join(sql.lower().split()) for name, sql in expected.items()}
         return actual == normalized_expected
+
+    @staticmethod
+    def _protect_path(path: Path, mode: int) -> None:
+        try:
+            os.chmod(path, mode)
+        except (NotImplementedError, OSError):
+            pass
 
     @staticmethod
     def _now() -> str:
