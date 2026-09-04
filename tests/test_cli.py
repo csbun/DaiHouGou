@@ -17,7 +17,7 @@ def test_cli_parses_speaker_trial_commands() -> None:
             "speaker",
             "run",
             "--backend",
-            "direct",
+            "ha",
             "--count",
             "30",
             "--interval-seconds",
@@ -39,7 +39,7 @@ def test_cli_parses_speaker_trial_commands() -> None:
 
     assert (run.speaker_command, run.backend, run.count, run.interval_seconds) == (
         "run",
-        "direct",
+        "ha",
         30,
         8,
     )

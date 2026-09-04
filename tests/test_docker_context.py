@@ -37,8 +37,9 @@ def test_go2rtc_does_not_replace_the_image_command_with_bare_flags() -> None:
     assert 'command: ["-c", "/config/go2rtc.yaml"]' not in compose
 
 
-def test_probe_persists_miservice_token_in_private_home() -> None:
+def test_compose_does_not_mount_a_legacy_xiaomi_token_home() -> None:
     compose = Path("compose.yaml").read_text(encoding="utf-8")
 
-    assert "HOME: /var/lib/guduck/mi" in compose
-    assert "./deploy/miservice/state:/var/lib/guduck/mi" in compose
+    assert "/var/lib/guduck/mi" not in compose
+    assert "deploy/miservice/state" not in compose
+    assert "HOME:" not in compose

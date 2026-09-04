@@ -10,7 +10,6 @@ from guduck_poc.report import JsonlReport
 from guduck_poc.settings import Settings
 from guduck_poc.speaker_trials import annotate_audible, run_trials
 from guduck_poc.speakers.base import Speaker
-from guduck_poc.speakers.direct import DirectSpeaker
 from guduck_poc.speakers.home_assistant import HomeAssistantSpeaker
 
 
@@ -55,7 +54,7 @@ def build_parser() -> argparse.ArgumentParser:
     speaker_commands = speaker.add_subparsers(dest="speaker_command", required=True)
 
     run = speaker_commands.add_parser("run")
-    run.add_argument("--backend", choices=("direct", "ha"), required=True)
+    run.add_argument("--backend", choices=("ha",), required=True)
     run.add_argument("--count", type=_positive_int, required=True)
     run.add_argument("--interval-seconds", type=_non_negative_float, required=True)
 
@@ -68,10 +67,6 @@ def build_parser() -> argparse.ArgumentParser:
     validate_ha.add_argument("--restart-id", required=True)
     validate_ha.add_argument("--non-admin-confirmed", action="store_true", required=True)
     return parser
-
-
-def _direct_speaker(settings: Settings) -> Speaker:
-    return DirectSpeaker(settings.mi_user, settings.mi_pass, settings.mi_did)
 
 
 def _ha_speaker(settings: Settings) -> Speaker:
@@ -183,7 +178,7 @@ def main() -> None:
 
     campaign_id, inventory_sha256 = _probe_context(settings)
     if args.speaker_command == "run":
-        speaker = _direct_speaker(settings) if args.backend == "direct" else _ha_speaker(settings)
+        speaker = _ha_speaker(settings)
         run_id = run_trials(
             args.backend,
             speaker,

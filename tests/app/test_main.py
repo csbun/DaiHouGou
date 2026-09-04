@@ -1,7 +1,8 @@
-import json
 import time
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
+from typing import ClassVar
 
 from fastapi.testclient import TestClient
 
@@ -25,34 +26,73 @@ class FakeSnapshotter:
 
 
 def settings_for(tmp_path: Path) -> Settings:
-    return Settings.from_mapping(
-        {
-            "MI_USER": "owner",
-            "MI_PASS": "secret",
-            "MI_SPEAKERS_JSON": json.dumps(
-                [
-                    {"id": "living_room", "name": "客厅", "did": "1"},
-                    {"id": "bedroom", "name": "卧室", "did": "2"},
-                ]
-            ),
-            "DATA_DIR": str(tmp_path),
-        }
-    )
+    return Settings.from_mapping({"DATA_DIR": str(tmp_path)})
 
 
-def test_production_app_builds_one_speaker_per_config(tmp_path: Path, monkeypatch) -> None:
-    created_dids: list[str] = []
-    monkeypatch.setattr(
-        main_module,
-        "DirectSpeaker",
-        lambda user, password, did: created_dids.append(did) or FakeSpeaker(),
-    )
+class FakeXiaomiAccount:
+    instances: ClassVar[list["FakeXiaomiAccount"]] = []
+
+    def __init__(self, storage, *, speaker_runtime, on_change) -> None:
+        self.storage = storage
+        self.speaker_runtime = speaker_runtime
+        self.on_change = on_change
+        self.started = False
+        self.stopped = False
+        self.instances.append(self)
+
+    async def start(self) -> None:
+        self.started = True
+        await self.speaker_runtime.replace_speakers(
+            {"binding-id": FakeSpeaker()}, ("binding-id",)
+        )
+        self.speaker_runtime.set_auth_status("ready")
+
+    async def stop(self) -> None:
+        self.stopped = True
+
+    def display_bindings(self):
+        return (SimpleNamespace(id="binding-id", name="客厅音箱"),)
+
+
+def seed_bound_camera(tmp_path: Path, camera_id: str = "front") -> None:
+    storage = Storage(tmp_path / "guduck.db")
+    storage.initialize()
+    storage.sync_cameras((camera_id,), "binding-id")
+
+
+def test_production_app_uses_database_backed_xiaomi_account(
+    tmp_path: Path, monkeypatch
+) -> None:
+    FakeXiaomiAccount.instances.clear()
+    monkeypatch.setattr(main_module, "XiaomiAccountManager", FakeXiaomiAccount)
     monkeypatch.setattr(main_module, "CameraSnapshotter", FakeSnapshotter)
 
     app = create_production_app(settings_for(tmp_path))
 
     assert app.title == "GuDuck"
-    assert created_dids == ["1", "2"]
+    assert len(FakeXiaomiAccount.instances) == 1
+    assert not hasattr(main_module, "DirectSpeaker")
+
+
+def test_production_lifespan_starts_with_real_xiaomi_manager_and_empty_database(
+    tmp_path: Path, monkeypatch
+) -> None:
+    class EmptyDiscovery:
+        def __init__(self, base_url: str) -> None:
+            assert base_url == "http://127.0.0.1:1984"
+
+        def stream_names(self) -> tuple[str, ...]:
+            return ()
+
+    monkeypatch.setattr(main_module, "Go2RtcClient", EmptyDiscovery)
+    monkeypatch.setattr(main_module, "CameraSnapshotter", FakeSnapshotter)
+
+    app = create_production_app(settings_for(tmp_path))
+
+    with TestClient(app) as client:
+        assert client.get("/").status_code == 200
+
+    assert (tmp_path / "guduck.db").is_file()
 
 
 def test_production_lifespan_discovers_once_and_loads_visual_stack_on_enable(
@@ -96,7 +136,7 @@ def test_production_lifespan_discovers_once_and_loads_visual_stack_on_enable(
     monkeypatch.setattr(main_module, "Go2RtcClient", FakeDiscovery)
     monkeypatch.setattr(main_module, "PersonDetector", detector_factory)
     monkeypatch.setattr(main_module, "FfmpegFrameSource", source_factory)
-    monkeypatch.setattr(main_module, "DirectSpeaker", lambda *args: FakeSpeaker())
+    monkeypatch.setattr(main_module, "XiaomiAccountManager", FakeXiaomiAccount)
     monkeypatch.setattr(main_module, "CameraSnapshotter", FakeSnapshotter)
     monkeypatch.setattr(
         main_module,
@@ -104,6 +144,7 @@ def test_production_lifespan_discovers_once_and_loads_visual_stack_on_enable(
         lambda runtime, **kwargs: create_app(runtime, csrf_token="fixed-token", **kwargs),
     )
 
+    seed_bound_camera(tmp_path)
     app = create_production_app(settings_for(tmp_path))
     assert calls == {"discovery": 0, "detector": 0, "source": 0}
 
@@ -168,7 +209,7 @@ def test_production_loads_selected_objects365_adapter_only_when_object_rule_is_e
     monkeypatch.setattr(main_module, "FfmpegFrameSource", FakeSource)
     monkeypatch.setattr(main_module, "ObjectDetector", nanodet_factory)
     monkeypatch.setattr(main_module, "Objects365ObjectDetector", objects365_factory)
-    monkeypatch.setattr(main_module, "DirectSpeaker", lambda *args: FakeSpeaker())
+    monkeypatch.setattr(main_module, "XiaomiAccountManager", FakeXiaomiAccount)
     monkeypatch.setattr(main_module, "CameraSnapshotter", FakeSnapshotter)
     monkeypatch.setattr(
         main_module,
@@ -177,6 +218,7 @@ def test_production_loads_selected_objects365_adapter_only_when_object_rule_is_e
     )
     persisted = Storage(tmp_path / "guduck.db")
     persisted.initialize()
+    persisted.sync_cameras(("front",), "binding-id")
     persisted.set_object_detector_adapter(ObjectDetectorAdapter.OBJECTS365)
     settings = replace(settings_for(tmp_path), objects365_model=Path("/models/objects365.onnx"))
 

@@ -22,12 +22,10 @@ services:
       - path: .env
         required: false
     environment:
-      HOME: /var/lib/guduck/mi
       PYTHONUNBUFFERED: "1"
     volumes:
       - ./deploy/app/state:/var/lib/guduck/data
       - ./deploy/app/models:/opt/guduck/models/custom:ro
-      - ./deploy/miservice/state:/var/lib/guduck/mi
     healthcheck:
       test: ["CMD", "python", "-m", "guduck.healthcheck"]
       interval: 15s
@@ -44,12 +42,9 @@ services:
     env_file:
       - path: .env.poc
         required: false
-    environment:
-      HOME: /var/lib/guduck/mi
     volumes:
       - ./artifacts:/workspace/artifacts
       - ./config:/workspace/config:ro
-      - ./deploy/miservice/state:/var/lib/guduck/mi
     profiles: ["tools"]
 
   homeassistant:

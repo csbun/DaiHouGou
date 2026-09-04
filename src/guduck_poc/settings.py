@@ -26,9 +26,6 @@ class Settings:
     inventory_path: Path
     go2rtc_api_url: str
     go2rtc_rtsp_base: str
-    mi_user: str = ""
-    mi_pass: str = ""
-    mi_did: str = ""
     ha_base_url: str = ""
     ha_access_token: str = ""
     ha_speaker_service: str = ""
@@ -38,15 +35,15 @@ class Settings:
 
     @classmethod
     def from_mapping(cls, env: dict[str, str]) -> "Settings":
+        for retired_key in ("MI_USER", "MI_PASS", "MI_SPEAKERS_JSON", "MI_DID"):
+            if retired_key in env:
+                raise ValueError(f"{retired_key} is not supported")
         return cls(
             artifact_dir=Path(env["POC_ARTIFACT_DIR"]),
             campaign_id=_require_campaign_id(env["POC_CAMPAIGN_ID"]),
             inventory_path=Path(env["POC_INVENTORY_PATH"]),
             go2rtc_api_url=_require_loopback(env["GO2RTC_API_URL"], "GO2RTC_API_URL"),
             go2rtc_rtsp_base=_require_loopback(env["GO2RTC_RTSP_BASE"], "GO2RTC_RTSP_BASE"),
-            mi_user=env.get("MI_USER", ""),
-            mi_pass=env.get("MI_PASS", ""),
-            mi_did=env.get("MI_DID", ""),
             ha_base_url=env.get("HA_BASE_URL", "").rstrip("/"),
             ha_access_token=env.get("HA_ACCESS_TOKEN", ""),
             ha_speaker_service=env.get("HA_SPEAKER_SERVICE", ""),

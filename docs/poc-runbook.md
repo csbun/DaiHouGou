@@ -1,700 +1,138 @@
-# 设备兼容性 PoC 与 GuDuck 运行手册
+# GuDuck 部署与小米音箱验收手册
 
-> 本手册同时覆盖设备兼容性 PoC 和 GuDuck 的首个“人员进入欢迎”正式应用。PoC 的 30 分钟摄像头与
-> 30 次音箱稳定性步骤仍可稍后执行；已经确认 `xiaobai` 拉流和 L05C 直连播报可用时，
-> 可以先按第 14 节启动 GuDuck。扩大日常使用范围前仍须补完第 6、8、10 和 11 节的稳定性验收。
+本文用于目标服务器上的部署验收。小米账号登录和真实音箱播报必须由用户在浏览器中手动验证；自动化测试不接触真实账号。
 
-请在目标 Debian 系服务器上运行本 PoC，不要在开发电脑上运行。服务器和所有小米设备
-必须处于同一个可信局域网内。管理页没有账号登录保护；不要通过路由器将管理页的 8080
-端口、go2rtc 的 1984 端口或 RTSP 的 8554 端口暴露到局域网之外。
+## 1. 验收边界
 
-## 运行模式
+本次验收覆盖：
 
-音箱支持两条互相独立的路径：
+- 应用在没有小米账号环境配置时正常启动；
+- 设置页完成账号授权及验证码流程；
+- 页面使用 AJAX 轮询，不发生整页刷新；
+- MiNA 返回的全部音箱出现在列表中并可选择；
+- 绑定、显示名称和测试状态写入数据库；
+- 授权 token 过期后可在同一页面重新授权；
+- 取消摄像头正在使用的音箱时先提示，确认保存后摄像头标记音箱不可用；
+- 不可用期间保留规则启用意图，恢复同一绑定后自动继续。
 
-- `direct`：不经过 Home Assistant，由探测容器直接调用 MiService 的 MIoT action。
-- `ha`：通过 Home Assistant 的 REST API 调用小米集成。
+管理界面无独立登录，仅允许从可信局域网访问，禁止直接发布到公网。
 
-Home Assistant 是可选的。只使用 `direct` 时，跳过第 7 步，不要启动 `homeassistant`，
-第 8 步只运行直连小节，`.env.poc` 中的 `HA_*` 无需填写或修改，保留示例默认值即可。
-最终验收报告中 HA 显示
-`NOT RUN` 不影响选择 `CONTINUE_GO2RTC_DIRECT`。
-
-本手册中的“直连”表示不经过 HA，并不表示完全的局域网本地控制。当前实现通过
-`MI_USER`、`MI_PASS` 和 `MI_DID` 调用 MiService，仍需要互联网访问小米服务；应用尚未接入
-MiService 的 `MI_LOCAL=<IP>:<Token>` UDP 本地模式。
-
-## 1. 检查服务器
-
-要求 Docker Engine 23 或更高版本、Docker Compose v2.24 或更高版本，以及至少 10 GB 可用
-磁盘空间。`app` 使用 v2.24 引入的可选 `env_file`，因此只运行前 13 节 PoC 时不需要提前创建
-`.env`。
+## 2. 部署准备
 
 ```bash
-docker version
-docker compose version
-df -h .
+mkdir -p deploy/go2rtc/state deploy/app/state deploy/app/models
+chmod 700 deploy/app/state
+cp deploy/go2rtc/go2rtc.example.yaml deploy/go2rtc/state/go2rtc.yaml
+cp .env.example .env
 ```
 
-## 2. 创建本地环境配置
+在 `.env` 中设置服务器局域网监听地址。在 `deploy/go2rtc/state/go2rtc.yaml` 中配置摄像头流。配置文件不得提交到版本库。
+
+如果服务器上已经运行 app，先用当前编排停止应用服务：
+
+```bash
+docker compose stop app
+```
+
+当前版本启动命令：
+
+```bash
+docker compose up -d --build go2rtc app
+docker compose ps
+docker compose logs --tail=100 app
+```
+
+确认 app 健康后打开 `http://SERVER_LAN_IP:8080/settings`。
+
+## 3. 小米授权验收
+
+1. 输入真实小米账号和密码，点击授权。
+2. 观察账号状态在页面内变化；浏览器地址和其他页面内容不应刷新。
+3. 若出现验证码要求，在页面内提交正确验证码。
+4. 授权成功后刷新设备列表。
+5. 核对账号下的音箱均已列出；设备底层标识不应出现在页面或网络响应中。
+
+密码和验证码仅在当前授权流程的内存中存在。关闭、取消或完成流程后，页面不应回填密码。数据库只持久化授权 token；日志、事件和 API 响应不得包含 token、密码、验证码或认证库异常原文。
+
+## 4. 音箱绑定验收
+
+1. 勾选至少两台音箱并设置容易识别的显示名称。
+2. 分别手动点击测试，确认界面只显示“测试成功”或“测试失败”。
+3. 无论测试结果如何都应允许保存。
+4. 刷新浏览器，确认之前绑定的设备默认勾选、显示名称保留。
+5. 重启 app，确认绑定仍然存在，且启动过程不依赖重新获取完整设备列表。
+
+设备列表刷新失败时，既有列表和可用状态应保持原快照，不应清空。MiNA 暂时不返回既有绑定时，该绑定仍保留但标记不可用。
+
+## 5. 摄像头联动验收
+
+1. 新发现的摄像头应显示未绑定音箱，直接启用规则应被拒绝。
+2. 为摄像头选择当前可用的绑定音箱，再启用人员进入欢迎规则。
+3. 回到设置页，取消勾选该音箱并保存。
+4. 第一次保存应列出受影响摄像头并要求确认。
+5. 确认保存后应成功；摄像头继续显示规则启用，但标记音箱不可用，检测运行暂停。
+6. 重新绑定同一设备或给摄像头选择其他可用音箱，确认运行恢复。
+
+同样验证物体类别播报规则。不可用期间不应积压旧播报，恢复后只处理新的检测结果。
+
+## 6. token 过期与重新授权
+
+在可控测试环境中使当前授权失效，然后触发设备刷新或一次播报：
+
+- 页面应进入需要重新授权状态；
+- 相关摄像头暂停，不改变规则启用选择；
+- 重新在设置页完成登录后，既有绑定继续使用；
+- 同一绑定恢复可用后摄像头自动恢复。
+
+本版本不迁移旧账号配置或外部 token 文件。旧部署升级后直接通过设置页重新授权。
+
+## 7. 权限与备份
+
+检查状态目录和数据库文件：
+
+```bash
+stat -f '%Lp %N' deploy/app/state deploy/app/state/guduck.db
+```
+
+Linux 可使用：
+
+```bash
+stat -c '%a %n' deploy/app/state deploy/app/state/guduck.db
+```
+
+预期目录为 `700`、数据库为 `600`。备份包含小米授权 token，应当按敏感凭据保护。
+
+一致性备份：
+
+```bash
+docker compose stop app
+cp -a deploy/app/state deploy/app/state.backup
+docker compose start app
+```
+
+## 8. 自动化回归
+
+在开发机运行：
+
+```bash
+.venv/bin/pytest -q
+.venv/bin/ruff check src tests
+node --test tests/js/region-editor.test.js
+git diff --check
+```
+
+自动化通过不能替代第 3 至第 6 节的真实账号与真实音箱验收。
+
+## 9. 可选摄像头与 Home Assistant 探针
+
+PoC 工具保留摄像头稳定性和 Home Assistant 音箱路径，用于独立诊断。它不再提供小米账号直连入口。
 
 ```bash
 cp .env.poc.example .env.poc
-chmod 600 .env.poc
-poc_campaign_id="poc-$(date +%Y%m%d-%H%M%S)"
-sed -i "s/^POC_CAMPAIGN_ID=.*/POC_CAMPAIGN_ID=${poc_campaign_id}/" .env.poc
-grep '^POC_CAMPAIGN_ID=' .env.poc
+docker compose --profile tools run --rm probe camera decode \
+  --stream nursery --duration-seconds 1800
+docker compose --profile tools run --rm probe speaker run \
+  --backend ha --count 3 --interval-seconds 8
 ```
 
-在服务器本地填写 `.env.poc`。使用 `direct` 路径时，运行音箱探测前最终必须填写
-`MI_USER`、`MI_PASS` 和 `MI_DID`，其中 `MI_DID` 按本节下文先查询再回填；使用 `ha`
-路径时，填写第 7 步找到的 `HA_*` 值。不要提交此文件，也不要把其内容粘贴到 issue 或报告
-中。上面的命令会将示例占位值替换为当前 PoC 的唯一标识符；允许
-格式为 3–64 位，以字母或数字开头，后续只能包含字母、数字、点、下划线或连字符。如果保留
-`replace-with-a-unique-poc-run-id`，probe 会在连接设备前报错
-`POC_CAMPAIGN_ID must be a unique 3-64 character identifier`。
-
-每次开始新的完整 PoC 时都生成一个新的 `POC_CAMPAIGN_ID`；同一轮 PoC 从首次探测到生成
-`gate.md` 必须始终使用同一个值，否则已采集证据无法归入同一次测试。除非同步修改 Compose
-的挂载配置，否则保持 `POC_INVENTORY_PATH=/workspace/config/poc-devices.json` 不变。
-
-选择 `direct` 路径时，先在 `.env.poc` 中填写拥有目标音箱的同一个小米账号 `MI_USER` 和
-`MI_PASS`，暂时保留 `MI_DID=` 为空。构建探测镜像并查询该账号下的设备：
-
-```bash
-docker compose --profile tools build probe
-docker compose --profile tools run --rm \
-  --entrypoint python probe -m miservice list
-```
-
-在输出中同时按设备名称“小米小爱音箱 Play 增强版”和型号
-`xiaomi.wifispeaker.l05c` 定位目标音箱，将该条目的数值 `did` 填入 `.env.poc`：
-
-```dotenv
-MI_DID=<音箱条目的数值 did>
-```
-
-这里需要的是 MIoT 设备列表中的 `did`。不要填写摄像头 DID、MiNA 列表中的 `deviceID`、
-局域网 IP、MAC 地址或型号字符串；设备名称可能重复，也不建议用名称代替数值 DID。列表
-输出可能包含设备令牌及其他家庭隐私数据，不要保存、提交或粘贴完整输出。只检查已回填的
-这一行，不要输出 `.env.poc` 的其他内容：
-
-```bash
-grep '^MI_DID=' .env.poc
-```
-
-如果 `miservice list` 返回 `code: 70016` 和“登录验证失败”，说明请求已经到达小米账号服务，
-但账号口令在 `serviceLoginAuth2` 阶段被拒绝；此错误发生在设备列表查询和 OTP 验证之前，
-与 `MI_DID`、摄像头及 go2rtc 无关。先停止重复尝试，再用下面的命令确认 Compose 传入的值
-是否存在、长度是否符合预期，以及是否意外带有首尾空格。该命令不会输出账号或密码正文：
-
-```bash
-docker compose --profile tools run --rm \
-  --entrypoint python probe -c '
-import os
-for key in ("MI_USER", "MI_PASS"):
-    value = os.environ.get(key, "")
-    print("{}: set={} len={} trimmed={}".format(
-        key, bool(value), len(value), value == value.strip()
-    ))
-'
-```
-
-如果 `set=False`、长度与实际值不符或 `trimmed=False`，先修正 `.env.poc`。Compose 会对未加
-引号和双引号中的 `$变量` 做插值；账号或密码含 `$`、`#`、空格等字符时，使用单引号保留
-字面值：
-
-```dotenv
-MI_USER='实际账号'
-MI_PASS='实际密码'
-```
-
-如果值中本身含单引号，在单引号值中写成 `\'`。修正后重新执行上面的无泄密检查。确认
-容器收到的长度正确后，在浏览器打开 `https://account.xiaomi.com/`，使用同一个登录标识和
-密码完成一次密码登录及可能出现的安全验证；`MI_USER` 应使用这次成功登录的标识。浏览器
-也拒绝时，先在小米账号页面解决凭据问题。浏览器成功但 `miservice list` 仍返回 `70016`
-时，不要连续重试；记录上面检查命令的四个非敏感结果，并继续排查账号认证兼容性。小米
-后续还可能返回 `70022` 限流，重复登录只会扩大问题。原始异常会显示账号，反馈日志前先
-将账号、Token、DID 等信息替换为 `<REDACTED>`。
-
-## 3. 启动 go2rtc 并配置摄像头
-
-```bash
-mkdir -p deploy/go2rtc/state
-cp deploy/go2rtc/go2rtc.example.yaml deploy/go2rtc/state/go2rtc.yaml
-docker compose up -d go2rtc
-```
-
-确认容器状态为 `running`，启动日志显示读取 `/config/go2rtc.yaml`，并且 API 在服务器本机
-可访问：
-
-```bash
-docker compose ps go2rtc
-docker compose logs --tail=20 go2rtc
-curl --fail --show-error http://127.0.0.1:1984/api
-```
-
-如果状态为 `restarting` 或 `exited`，不要继续配置摄像头。先根据日志解决启动错误；正常日志
-应包含 `config path=/config/go2rtc.yaml` 和 `[api] listen addr=127.0.0.1:1984`。
-
-在另一台电脑上创建 SSH 隧道，然后访问 `http://127.0.0.1:1984`：
-
-```bash
-ssh -L 1984:127.0.0.1:1984 SERVER_USER@SERVER_IP
-```
-
-可以先只接入流名称为 `xiaobai` 的一台摄像头；未配置第二台时，下面所有
-`xiaobai_25k` 操作都可以跳过，不会阻塞第 14 节。GuDuck 会发现 `go2rtc` 中全部已命名
-码流，因此以后新增摄像头时不需要修改应用环境变量或重启应用，只需在管理页手动刷新。
-
-以下操作从小米账号已登录并显示摄像头列表开始。不要按列表顺序判断设备；先用米家设备名称
-分别找到“小白智能摄像机”和“小白智能摄像机 2.5K 版”的候选项，再核对每项显示的型号，
-并用实际画面对应的房间或视角做最终确认。记录登录后显示的账号标识、令牌和每台设备的完整
-`xiaomi://` 源地址。当前 go2rtc 版本不会把页面中的登录或设备信息写回 YAML，下面的配置
-必须直接在服务器上编辑：
-
-```bash
-vi deploy/go2rtc/state/go2rtc.yaml
-```
-
-将配置整理为以下结构；`xxx`、`xx` 和 `192.168.x.x` 都是占位符，必须替换为实际值：
-
-```yaml
-api:
-  listen: "127.0.0.1:1984"
-  local_auth: false
-rtsp:
-  listen: "127.0.0.1:8554"
-webrtc:
-  listen: ""
-log:
-  format: json
-  level: info
-  output: stdout
-xiaomi:
-  "xxx": xxx
-streams:
-  cam1:
-    - "xiaomi://xxx:cn@192.168.x.x?did=xx&model=xxx&subtype=sd"
-```
-
-每台摄像头使用稳定且唯一的流名称，例如 `cam1`、`cam2`；完整 PoC 仍建议将两台目标设备
-命名为 `xiaobai` 和 `xiaobai_25k`。复制源地址时不要手工重写账号、Token、DID、型号或 IP。
-只在查询参数中设置 `subtype=sd`；如果 `sd` 不能通过 30 秒预览，按 `auto`、`1`、`2` 的
-顺序逐项修改这一项，每次保存后重启 go2rtc 并观察至少 30 秒，选择能够持续更新且码率最低的
-码流。配置修改后重启 go2rtc：
-
-```bash
-docker compose restart go2rtc
-```
-
-实际配置中的账号标识、令牌、DID、局域网 IP 和完整 `xiaomi://` 地址都是家庭隐私数据，
-不得提交到 Git，也不得粘贴到 issue 或报告中。
-
-完整双摄像头 PoC 在完成两路预览后，应在服务器上确认两个固定名称都已注册；只配置一台
-摄像头时只需确认 `xiaobai`：
-
-```bash
-curl --fail --silent --show-error http://127.0.0.1:1984/api/streams
-```
-
-完整 PoC 的输出必须同时包含 `xiaobai` 和 `xiaobai_25k`；单摄像头部署的输出包含
-`xiaobai` 即可。然后使用项目现有的 probe 镜像检查已配置的 RTSP 输出；未配置第二台
-摄像头时跳过第二条命令：
-
-```bash
-docker compose --profile tools run --rm --entrypoint ffprobe probe \
-  -v error -rtsp_transport tcp -select_streams v:0 \
-  -show_entries stream=index,codec_type,codec_name,width,height \
-  -of json rtsp://127.0.0.1:8554/xiaobai
-docker compose --profile tools run --rm --entrypoint ffprobe probe \
-  -v error -rtsp_transport tcp -select_streams v:0 \
-  -show_entries stream=index,codec_type,codec_name,width,height \
-  -of json rtsp://127.0.0.1:8554/xiaobai_25k
-```
-
-所有已执行的命令都必须以退出码 `0` 结束，并且各自输出的 `streams` 数组至少包含一项
-`codec_type` 为 `video` 的流。这里的 `-rtsp_transport tcp` 只控制 ffprobe 到 go2rtc 的
-RTSP 连接；它与 `xiaomi://` 源地址中控制摄像头到 go2rtc 的 `transport` 参数不是同一层。
-如果遗漏该选项，ffprobe 可能先尝试 go2rtc 不支持的 UDP RTSP 传输并显示
-`461 Unsupported transport`。不要仅因为这个 `461` 就修改小米源地址。
-
-若 API 输出缺少名称，检查 `deploy/go2rtc/state/go2rtc.yaml` 中 `streams` 下是否使用了上面的固定名称。
-若名称存在，但预览或
-ffprobe 返回 `404 Not Found`，先用只请求视频的 API 调用获取 Xiaomi 层的真实错误：
-
-```bash
-curl --max-time 45 --silent --show-error \
-  --write-out '\nHTTP %{http_code}\n' \
-  'http://127.0.0.1:1984/api/streams?src=xiaobai&video'
-```
-
-若返回类似 `xiaomi: probe: miss: read media: cs2: read udp ... i/o timeout`，首先确认摄像头
-已通电、已开机，并且在米家 App 中显示在线；摄像头关闭时，go2rtc 仍可能完成账号鉴权和
-设备发现，但无法收到媒体数据。打开摄像头后保持原配置不变，重新执行 API 和 ffprobe
-验证。只有设备确认在线后仍然超时，才查看
-`docker compose logs --tail=100 go2rtc`，并按上述顺序逐项尝试其他
-`subtype`；不要同时修改 `subtype` 和 `transport`。任一路仍未通过时都不要进入第 4 步。
-
-## 4. 记录设备清单
-
-```bash
-mkdir -p config
-cp config/poc-devices.example.json config/poc-devices.json
-```
-
-按本手册完成 PoC 时，下面列出的设备信息都应填写。当前自动验收会检查两台摄像头的
-`name`、`miot_model`、`firmware` 和 `codec`，以及音箱的 `name`、`miot_model` 和
-`firmware`；摄像头的 `ip` 暂未被自动检查，但仍应按手册记录，供确认设备身份和排查 DHCP
-地址变化使用。不要用产品销售名称代替 MIoT 型号。
-
-| 设备和字段 | 获取位置和填写方法 |
-|---|---|
-| 摄像头 `miot_model` | 使用第 3 步 go2rtc 小米设备列表中显示的型号；也可以只查看本地 `deploy/go2rtc/state/go2rtc.yaml` 中对应源地址的 `model=` 参数。填写完整的 MIoT 型号字符串，不要复制整条源地址。 |
-| 摄像头 `firmware` | 在米家 App 中分别进入设备卡片，打开右上角菜单，在“固件更新”或“固件升级”页面记录当前已安装版本。菜单名称可能随 App 或设备插件版本略有不同。 |
-| 摄像头 `ip` | 优先从路由器的 DHCP 客户端或已连接设备列表中，按设备名称和 MAC 地址核对后记录；也可以只查看 go2rtc 自动生成源地址中 `@` 之后、`?` 之前的局域网 IP。记录本次 PoC 开始时实际使用的地址。 |
-| 摄像头 `codec` | 使用第 3 步最终选定的 `subtype` 运行 `ffprobe`，将视频流的 `codec_name` 原样填写，例如 `h264` 或 `hevc`。不要根据产品宣传或米家中的编码开关推测。 |
-| 音箱 `miot_model` | 模板已按目标“小米小爱音箱 Play 增强版”预填 `xiaomi.wifispeaker.l05c`。先在米家设备信息中核对，随后用第 2 步的 `miservice list` 再确认。 |
-| 音箱 `firmware` | 在米家或小爱音箱 App 的设备设置、设备信息或固件升级页面记录当前已安装版本。 |
-
-`miservice list` 的完整输出，以及完整的 `xiaomi://` 源地址，可能包含令牌、DID、账号标识
-或其他家庭隐私数据。只把上表要求的值抄入清单；不要添加密码、令牌、DID、MAC 地址或小米
-源地址，也不要把命令的完整输出保存到 issue 或报告中。
-
-不要从完整 PoC 清单中删除测试失败的摄像头；完整 PoC 验收要求必须恰好存在 `xiaobai` 和
-`xiaobai_25k`，并且从这两个名称中选择唯一的主摄像头。当前只配置一台摄像头的部署可以
-暂不生成双摄像头清单。修改此文件会改变其指纹，并有意使之前的探测证据失效。
-
-## 5. 运行单元测试和代码检查
-
-```bash
-docker build -f docker/poc.Dockerfile -t guduck-poc:test .
-docker run --rm --entrypoint pytest guduck-poc:test -q
-docker run --rm --entrypoint ruff guduck-poc:test check src tests
-docker compose config --quiet
-```
-
-PoC 测试镜像已经复制仓库策略测试所需的 `.dockerignore`、Compose、Dockerfile 和 GuDuck 环境
-示例，因此不需要宿主机只读挂载。pytest 输出末尾不得出现 `failed`；容器内具备 FFmpeg，生成
-视频的集成测试也不得显示为 `skipped`。
-
-## 6. 运行摄像头 30 分钟稳定性和恢复测试
-
-在单独的终端启动主机资源采样：
-
-```bash
-set -a
-source .env.poc
-set +a
-scripts/capture-host-stats.sh artifacts/poc/host-stats-30m.log 30 "$POC_CAMPAIGN_ID"
-```
-
-分别运行每台摄像头：
-
-```bash
-docker compose --profile tools run --rm probe camera decode --stream xiaobai --duration-seconds 1800
-docker compose --profile tools run --rm probe camera decode --stream xiaobai_25k --duration-seconds 1800
-```
-
-重启 go2rtc，并测试已配置主摄像头的恢复能力：
-
-```bash
-go2rtc_restart_id="go2rtc-$(date +%s)"
-docker compose restart go2rtc
-docker compose --profile tools run --rm probe camera wait \
-  --stream xiaobai_25k --max-seconds 60 --restart-id "$go2rtc_restart_id"
-```
-
-两条解码命令都必须完成，且恢复必须在 60 秒内完成。
-
-## 7. （可选）配置临时 Home Assistant 路径
-
-选择 `direct` 路径时跳过本节。只有需要验证 HA 路径时才执行以下步骤。
-
-```bash
-mkdir -p deploy/homeassistant/state
-cp deploy/homeassistant/configuration.yaml deploy/homeassistant/state/configuration.yaml
-docker compose --profile ha up -d homeassistant
-```
-
-在 `http://SERVER_IP:8123` 完成初始化，添加小米集成并绑定 L05C。创建一个专用的非管理员
-用户，并为该用户创建长期访问令牌（Long-Lived Access Token）。在开发者工具中找到可用的
-L05C 服务、实体、文本字段和其他数据，然后只更新 `.env.poc` 中相应的 `HA_*` 值。
-非管理员操作失败必须记录为失败；不要改用所有者令牌。
-
-重启 HA，等待其界面恢复正常，然后使用专用的非管理员令牌执行明确的重启后验证：
-
-```bash
-ha_restart_id="ha-$(date +%s)"
-docker compose restart homeassistant
-docker compose --profile tools run --rm probe speaker validate-ha \
-  --restart-id "$ha_restart_id" --non-admin-confirmed
-```
-
-确认参数表示操作者的现场确认。只有在 `.env.poc` 中确实填入专用非管理员用户令牌时，才可
-使用此参数。
-
-## 8. 运行并标注音箱路径各 30 次试播
-
-每次试播都必须由成年人现场聆听。API 接受请求不等于音箱实际播放并被听见。
-
-### 8.1 直连路径（不需要 Home Assistant）
-
-先确认第 2 步已经从 MIoT 设备列表取得 L05C 的数值 `did`，并写入 `.env.poc` 的
-`MI_DID`。如果需要复核设备身份，可以重新构建探测镜像并查询列表：
-
-```bash
-docker compose --profile tools build probe
-```
-
-```bash
-docker compose --profile tools run --rm \
-  --entrypoint python probe -m miservice list
-```
-
-输出的保密要求与第 2 步相同。然后可以用以下命令查看该型号的 MIoT 能力：
-
-```bash
-docker compose --profile tools run --rm \
-  --entrypoint python probe -m miservice spec xiaomi.wifispeaker.l05c text
-```
-
-先执行一次单次播报，确认返回的 JSON 中 `code` 为 `0`，并且成年人实际听到音箱发声：
-
-```bash
-docker compose --profile tools run --rm \
-  --entrypoint python probe -m miservice action \
-  '{"did":"MI_DID_VALUE","siid":5,"aiid":3,"in":["这是直连测试"]}'
-```
-
-当前 PoC 对 L05C 固定使用 `siid=5`、`aiid=3`。如果 API 返回成功但音箱没有声音，必须将
-该次记为未听见，不得仅凭 `code=0` 判定通过。
-
-```bash
-docker compose --profile tools run --rm probe speaker run --backend direct --count 30 --interval-seconds 8
-docker compose --profile tools run --rm probe speaker annotate --run-id DIRECT_RUN_ID --count 30 --missed '2,7'
-```
-
-将示例中的未听见编号替换为实际未听见的试播编号。
-
-### 8.2 Home Assistant 路径（可选）
-
-只有完成第 7 步并决定验证 HA 时才运行以下命令：
-
-```bash
-docker compose --profile tools run --rm probe speaker run --backend ha --count 30 --interval-seconds 8
-docker compose --profile tools run --rm probe speaker annotate --run-id HA_RUN_ID --count 30 --missed ''
-```
-
-如果只验证直连路径，不要运行 `--backend ha`，也不需要填写 `HA_*`。
-
-## 9. 停止测试失败的音箱路径
-
-一条已运行的路径只有同时满足 30/30 次 API 接受和至少 29/30 次现场听见，才通过第一道
-验收。不要为失败的路径运行扩展测试。如果所有已选择的路径都失败，请保留产物并停止 PoC。
-
-## 10. 为通过的路径运行并标注 100 次试播
-
-对第 9 步通过的每条路径执行：
-
-```bash
-docker compose --profile tools run --rm probe speaker run --backend BACKEND --count 100 --interval-seconds 8
-docker compose --profile tools run --rm probe speaker annotate --run-id RUN_ID --count 100 --missed ''
-```
-
-扩展验收要求至少 99/100 次 API 接受，以及 98/100 次现场确认听见。
-
-## 11. 运行 8 小时主摄像头压力测试
-
-在一个终端启动新的主机资源采样，再在另一个终端运行主摄像头解码：
-
-```bash
-scripts/capture-host-stats.sh artifacts/poc/host-stats-8h.log 60 "$POC_CAMPAIGN_ID"
-docker compose --profile tools run --rm probe camera decode --stream xiaobai_25k --duration-seconds 28800
-```
-
-如果任何 `MemAvailable` 采样低于 `768000 kB`，或日志中包含 OOM killer 事件，不得宣布
-测试成功。验收同样会拒绝以下情况：缺少 OOM 可见性、采样间隔超过 90 秒，或采样窗口没有
-覆盖主摄像头解码过程。先测较低质量的码流；不要为了通过测试而添加 swap。
-
-## 12. 生成并审核验收报告
-
-```bash
-docker compose --profile tools run --rm probe report gate \
-  --inventory /workspace/config/poc-devices.json \
-  --host-stats /workspace/artifacts/poc/host-stats-8h.log
-```
-
-审核 `artifacts/poc/gate.md`。记录以下决定之一：`CONTINUE_GO2RTC_HA`、
-`CONTINUE_GO2RTC_DIRECT`、`REPLACE_CAMERA`、`FIX_SPEAKER_INTEGRATION` 或
-`UPGRADE_SERVER`。只有 `CONTINUE_*` 决定才允许开始规划正式应用。
-
-## 13. 只停止 PoC 容器
-
-```bash
-docker compose --profile ha down
-```
-
-保留 `artifacts/poc` 以便记录最终决定。不要使用 `docker compose down -v`；删除卷或状态会
-增加问题排查和后续重跑的难度。
-
-## 14. 启动 GuDuck“人员进入欢迎”应用
-
-### 14.1 升级前停止与数据迁移
-
-从现有多摄像头版本升级时，先在旧代码仍然存在时停止 app：
-
-```bash
-docker compose -f compose.poc.yaml stop app
-docker compose -f compose.poc.yaml ps app
-```
-
-确认 `app` 已停止后再拉取新代码。从新版模板创建 `.env`：
-
-```bash
-git pull --ff-only
-test -e .env || cp .env.example .env
-chmod 600 .env
-```
-
-不要整份复制或重命名 `.env.mvp`。对照两个文件，人工迁移 `MI_USER`、`MI_PASS`、
-`MI_SPEAKERS_JSON`、go2rtc 地址、检测参数和 `WEB_*` 等实际配置；`DATA_DIR`、`MODEL`、
-`OBJECT_MODEL`、`OBJECTS365_MODEL` 必须保留 `.env.example` 中的 `/var/lib/guduck` 与
-`/opt/guduck` 新路径。旧文件继续留在本机且保持 Git 忽略，确认升级完成后再自行归档。
-
-GuDuck 首次启动会自动把 `deploy/app/state/daihougou.db` 以及同名的 `-wal`、`-shm`
-文件改名为 `guduck.db`。迁移不改动 SQLite 内容或结构；旧 app 必须保持停止，避免两个版本
-同时打开数据库。如果新旧文件同时存在，GuDuck 优先使用 `guduck.db`，不会覆盖任何文件。
-
-若升级自更早的单摄像头数据库结构，请在启动新 app 前备份旧数据库三件套：
-
-```bash
-backup_dir="deploy/app/state/backup-before-multicamera-$(date +%Y%m%d-%H%M%S)"
-sudo mkdir -p "$backup_dir"
-for file in daihougou.db daihougou.db-wal daihougou.db-shm; do
-  if sudo test -e "deploy/app/state/$file"; then
-    sudo mv "deploy/app/state/$file" "$backup_dir/$file"
-  fi
-done
-sudo ls -la "$backup_dir" deploy/app/state
-```
-
-不要删除备份。回滚到早期单摄像头版本时，必须同时恢复与该代码匹配的旧结构备份。
-
-仅回滚品牌更名时，先停止 GuDuck 并备份两套文件名，再做无覆盖改名：
-
-```bash
-docker compose stop app
-rollback_backup="deploy/app/state/backup-before-brand-rollback-$(date +%Y%m%d-%H%M%S)"
-sudo mkdir -p "$rollback_backup"
-for stem in guduck daihougou; do
-  for suffix in "" "-wal" "-shm"; do
-    file="deploy/app/state/${stem}.db${suffix}"
-    if sudo test -e "$file"; then
-      sudo cp -a "$file" "$rollback_backup/"
-    fi
-  done
-done
-
-(
-  set -eu
-  for suffix in "-wal" "-shm" ""; do
-    current="deploy/app/state/guduck.db${suffix}"
-    legacy="deploy/app/state/daihougou.db${suffix}"
-    if sudo test -e "$current" && sudo test -e "$legacy"; then
-      echo "rollback collision: $current and $legacy both exist" >&2
-      exit 1
-    fi
-  done
-  for suffix in "-wal" "-shm" ""; do
-    current="deploy/app/state/guduck.db${suffix}"
-    legacy="deploy/app/state/daihougou.db${suffix}"
-    if sudo test -e "$current"; then
-      sudo mv "$current" "$legacy"
-    fi
-  done
-)
-```
-
-出现 `rollback collision` 时，预检会在改名之前停止。不要覆盖或删除任一文件；旧镜像可继续
-使用保留下来的 `daihougou.db`。若必须让旧镜像使用 GuDuck 产生的新状态，先把整套旧文件移到
-另一个备份目录，重新执行预检，再启动旧镜像。
-
-### 14.2 创建私有状态目录和环境文件
-
-GuDuck 使用第 3 节已经验证的全部 `go2rtc` 码流。先创建不会进入 Git 或 Docker 构建上下文的
-状态目录：
-
-```bash
-mkdir -p deploy/app/state deploy/miservice/state
-chmod 700 deploy/app/state deploy/miservice/state
-test -e .env || cp .env.example .env
-chmod 600 .env
-```
-
-如果 `.env` 已存在，不要再次执行 `cp`。在服务器本地填写：
-
-```dotenv
-MI_USER='小米账号'
-MI_PASS='小米账号密码'
-MI_SPEAKERS_JSON='[{"id":"living_room","name":"客厅音箱","did":"音箱数值DID"},{"id":"bedroom","name":"卧室音箱","did":"另一个音箱数值DID"}]'
-GO2RTC_API_URL=http://127.0.0.1:1984
-GO2RTC_RTSP_BASE_URL=rtsp://127.0.0.1:8554
-WEB_HOST=服务器的局域网IPv4地址
-WEB_PORT=8080
-```
-
-每个音箱对象的 `id` 必须稳定且唯一，`name` 用于管理页显示，`did` 使用第 2 节查询到的
-数值 DID；数组中的第一个音箱是新摄像头的默认配对音箱。至少配置一个音箱，不能重复
-`id` 或 DID。生产应用不读取 `.env.poc` 中的单个 `MI_DID`。
-
-同时运行 `ip -4 -brief address`，把 `WEB_HOST` 填为服务器在家庭局域网中的固定 IPv4
-地址。不要填写 `0.0.0.0`，也不要使用 Docker 网桥地址。只检查不含凭据的绑定和 go2rtc
-地址：
-
-```bash
-grep -E '^(GO2RTC_API_URL|GO2RTC_RTSP_BASE_URL|WEB_HOST|WEB_PORT)=' .env
-```
-
-不要在终端输出小米账号、密码、音箱清单或 DID。其他参数先保留默认值。
-
-### 14.3 持久化 MiService 登录 Token
-
-MiService 把登录状态写入 `$HOME/.mi.token`。Compose 已将 probe 和 app 的 `HOME` 都设为
-`/var/lib/guduck/mi`，并把宿主机 `deploy/miservice/state/` 挂载到该位置。这样
-`docker compose run --rm` 删除临时容器时不会再删除 Token。
-
-先重建包含该挂载的 probe，然后在有 TTY 的终端完成一次登录；小米要求时输入手机验证码：
-
-```bash
-docker compose --profile tools build probe
-docker compose --profile tools run --rm \
-  --entrypoint python probe -m miservice list
-```
-
-不要保存或粘贴设备列表。确认 Token 已持久化并收紧权限：
-
-```bash
-sudo test -s deploy/miservice/state/.mi.token
-sudo chmod 600 deploy/miservice/state/.mi.token
-sudo stat -c '%a %n' deploy/miservice/state deploy/miservice/state/.mi.token
-```
-
-预期两行权限分别为 `700` 和 `600`。随后再次运行同一条 `miservice list` 命令；正常情况下
-不再要求手机验证码。若仍要求验证码，先执行下面的挂载检查，不要重复登录：
-
-```bash
-docker compose --profile tools run --rm \
-  --entrypoint sh probe -c 'printf "HOME=%s\n" "$HOME"; test -s "$HOME/.mi.token"'
-```
-
-预期输出 `HOME=/var/lib/guduck/mi` 且退出码为 `0`。不要执行 `cat .mi.token`。
-
-### 14.4 构建、启动和首次发现
-
-```bash
-docker compose build app
-docker compose up -d go2rtc app
-docker compose ps go2rtc app
-docker compose logs --tail=50 app
-```
-
-60 秒后检查健康状态：
-
-```bash
-server_lan_ip=$(sed -n 's/^WEB_HOST=//p' .env)
-curl --fail --silent --show-error "http://${server_lan_ip}:8080/healthz" \
-  | python3 -m json.tool
-```
-
-从局域网浏览器打开 `http://SERVER_IP:8080/`。启动时应用会读取 `go2rtc` 的全部流名称，并
-为新发现摄像头创建默认关闭的规则；摄像头名称来自 `go2rtc`，管理页不能改名。没有已开启
-规则时，视频流应显示“未启动（规则关闭）”，检测器应为停止状态，也不应存在 GuDuck 启动的
-FFmpeg 解码进程。这是节约资源的正常状态，不代表 `go2rtc` 码流已停止。
-
-以后在 `go2rtc` 新增、删除或重命名码流后，点击“刷新摄像头”更新可用状态。应用不会后台
-轮询。已保存但本次未发现的摄像头仍显示在页面中，其规则与音箱配对不会被自动删除。
-
-### 14.5 认证失效处理
-
-常驻 app 不读取 stdin，也不会等待手机验证码。管理页显示音箱认证
-`reauth_required` 时，使用 14.3 的一次性 probe 命令重新完成认证，然后执行：
-
-```bash
-sudo chmod 600 deploy/miservice/state/.mi.token
-docker compose restart app
-```
-
-不需要重新构建镜像。重启后等待健康检查，再从管理页继续操作。不要删除 Token 作为普通
-排障手段；只有确认登录状态损坏并准备立即重新认证时，才人工备份后处理该文件。
-
-### 14.6 验证重建后不再要求验证码
-
-先在成年人在场时完成一次第 8.1 节的单次播报，再连续重建 probe 和 app 容器：
-
-```bash
-docker compose --profile tools run --rm \
-  -T --entrypoint python probe -m miservice list >/dev/null
-docker compose up -d --force-recreate app
-docker compose ps app
-```
-
-第一条命令退出码应为 `0`。`-T` 会关闭交互终端：Token 有效时设备列表被重定向到
-`/dev/null`；需要验证码时命令会立即失败，而不会在不可见的提示上等待。第二条完成后
-Token 文件仍存在，app 最终恢复健康。
-
-### 14.7 多摄像头、多音箱功能验收
-
-至少配置两路摄像头和两个音箱时，按以下步骤验收；当前只有一台摄像头时，可以先完成涉及
-该摄像头的步骤，后续增加设备后再补齐交叉验证。
-
-1. 启动后或点击“刷新摄像头”，确认页面至少出现两个与 `go2rtc` 完全一致的流名称。
-2. 确认两台摄像头的欢迎规则初始都关闭，视频流显示“未启动（规则关闭）”，检测器显示停止，
-   且没有 GuDuck 启动的 FFmpeg 解码进程；规则关闭时有人进入也不得播报。
-3. 分别给两台摄像头选择不同的已配置音箱，然后逐台开启规则。切换开关时页面不得完整刷新；
-   若开启时画面已经有人，启动校准不得立即播报。
-4. 每路画面先无人至少 10 秒，再让人进入；每次只能由该摄像头配对的房间音箱播报，从进入
-   到听见欢迎语应不超过 5 秒。同一音箱的播报会串行，不同音箱可并行。
-5. 人持续留在画面 2 分钟不得重复播报。人离开至少 10 秒并等待默认 60 秒冷却后，再次进入
-   应播报第二次。
-6. 点击页面顶部“设置”，在欢迎规则中修改欢迎词，每行一条并保存；下一次触发应使用新内容，
-   不需要重启。新数据库应显示 10 句英语默认欢迎语；已有自定义欢迎语不得被升级覆盖。
-7. 在 `go2rtc` 删除一路码流或关闭对应摄像头并手动刷新；该路应显示未发现或降级，另一路
-   必须继续检测和播报。恢复码流后再次手动刷新。
-8. 从 `.env` 的音箱清单中删除某路已配对的音箱 ID 并重建 app；该摄像头必须要求明确
-   重新选择可用音箱，绝不能自动回退到第一个音箱。
-9. 开启第 4 台摄像头时，页面应显示资源负载提示，但仍保存并执行该操作。低配置服务器上
-   应只开启实际需要的摄像头。
-10. 检查应用状态目录只包含 SQLite 及其 WAL/SHM 文件和人工创建的备份目录，不得出现
-    图片、视频或音频：
-
-```bash
-find deploy/app/state -maxdepth 1 -type f -printf '%f\n'
-```
-
-完成上述功能后保持 app 连续运行 30 分钟，期间至少完成三次“离开后再次进入”。记录是否有
-漏报、误报、重复播报和超过 5 秒的响应。这个 30 分钟结果用于正式应用验收，不替代第 6、
-8 和 10 节尚未完成的长期稳定性测试。
-
-### 14.8 停止、升级和回滚
-
-停止 GuDuck 但保留 go2rtc：
-
-```bash
-docker compose stop app
-```
-
-升级代码后只需重建 app；当前数据库和登录 Token 都保留在宿主机：
-
-```bash
-docker compose build app
-docker compose up -d app
-```
-
-如果升级需要回滚数据库结构，必须按 14.1 同时恢复匹配版本的代码和数据库备份。不要删除
-`deploy/miservice/state/.mi.token`，数据库回滚不要求重新登录小米账号。
-
-## 产物隐私警告
-
-JSONL 中的密钥会按字段名脱敏，但 PoC 产物仍可能包含设备名称、固件版本、局域网 IP、服务
-错误和时间信息。请将产物目录视为家庭隐私数据，不要未经处理直接公开。
+探针产物写入 `artifacts/`，不要在其中记录账号凭据、摄像头 URL 或授权 token。

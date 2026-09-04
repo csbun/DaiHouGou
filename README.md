@@ -1,390 +1,129 @@
-<h1 align="center">
-  <img src="docs/assets/guduck-logo.svg" alt="GuDuck" width="640">
-</h1>
+# GuDuck
 
-GuDuck 是一个部署在家庭局域网内的儿童陪护应用。它通过 `go2rtc` 读取小米生态
-摄像头的视频流，在本地检测“人员进入画面”事件或绘本画面中的通用物体，并通过小爱音箱
-播报结果。
+GuDuck 是一个运行在家庭局域网内的摄像头事件与音箱播报应用。它从 go2rtc 读取实时画面，在本机完成检测，并通过小米 MiNA `text_to_speech` 向用户在界面中绑定的音箱播报。
 
-当前版本提供：
+当前功能包括：
 
-- 本地视频解码与人员检测，不把摄像头画面上传给第三方视觉服务；
-- 一个简单的局域网管理页面，可查看运行状态、最近事件，为每台摄像头独立开启规则并指定
-  播放音箱；
-- 通过 MiService 直连小爱音箱，不要求安装 Home Assistant；
-- 多摄像头断线隔离与自动恢复、规则冷却，以及摄像头配置、全局欢迎词和事件记录持久化。
-- 绘本物体规则可使用 NanoDet COCO 或 Objects365 YOLO26n adapter，在 1 FPS 画面变化判断
-  通过后最多播报三个英文类别；该规则默认关闭，可按摄像头单独启用。
+- 自动发现 go2rtc 摄像头流；
+- 按摄像头配置“人员进入欢迎”和“物体类别播报”规则；
+- 在管理界面完成小米账号授权、验证码提交和重新授权；
+- 列出账号下 MiNA 返回的全部音箱，允许选择任意多个作为绑定设备；
+- 手动测试每台已选择音箱，并用“测试成功”或“测试失败”显示结果；
+- 音箱暂时不可用或授权过期时暂停相关摄像头规则，恢复后自动继续。
 
-> 当前管理页面没有登录功能。服务器、摄像头、音箱和管理设备必须位于同一个可信局域网，
-> 不要将 `8080`、`1984` 或 `8554` 端口暴露到互联网。
+## 安全边界
 
-## 当前支持范围
+管理界面没有独立的应用登录，只应暴露在可信家庭局域网，不能直接映射到公网。摄像头账号、RTSP 地址及其他秘密应保留在本机的 go2rtc 配置中。
 
-- 摄像头：已验证小白智能摄像机和小白智能摄像机 2.5K 版；应用会发现 `go2rtc` 中所有
-  已命名的码流，不限制摄像头数量。
-- 音箱：已验证小米小爱音箱 Play 增强版，型号 `xiaomi.wifispeaker.l05c`。
-- 规则：每台摄像头可独立开启“人员进入欢迎”和“绘本物体播报”，共用固定配对音箱。新发现
-  摄像头的两条规则均默认关闭。
-- 音箱控制：当前使用 MiService 调用小米服务，需要服务器能够访问互联网。Home Assistant
-  仅用于设备兼容性 PoC 的备选路径，不是 GuDuck 的运行依赖。
+小米账号密码和验证码只在一次授权流程的内存中使用，不保存到配置文件或数据库。授权 token、音箱绑定和摄像头配置保存在应用 SQLite 数据库中。界面和 API 不展示底层设备标识、token 或认证异常原文。
 
-## 运行要求
-
-- Debian 系 Linux 服务器；
-- Docker Engine 23 或更高版本；
-- Docker Compose v2.24 或更高版本；
-- 至少 10 GB 可用磁盘空间；
-- 服务器与小米设备处于同一个可信子网；
-- 可访问 GitHub、容器镜像仓库、模型下载地址和小米服务。
-
-先确认 Docker 和磁盘空间：
+应用数据库目录应为 `0700`，数据库文件应为 `0600`。部署前执行：
 
 ```bash
-docker version
-docker compose version
-df -h .
+mkdir -p deploy/go2rtc/state deploy/app/state deploy/app/models
+chmod 700 deploy/app/state
 ```
 
-## 安装
+## 部署
 
-克隆仓库并进入项目目录：
+要求：
+
+- Docker Engine 与 Docker Compose v2；
+- 摄像头和目标主机处于可访问的局域网；
+- 目标主机可访问小米服务；
+- 应用使用单进程运行，以保证授权状态、任务队列和设备工作线程的一致性。
+
+复制示例配置：
 
 ```bash
-git clone https://github.com/csbun/DaiHouGou.git
-cd DaiHouGou
+cp deploy/go2rtc/go2rtc.example.yaml deploy/go2rtc/state/go2rtc.yaml
+cp .env.example .env
 ```
 
-创建私有状态目录和本地环境文件：
-
-```bash
-mkdir -p deploy/go2rtc/state deploy/app/state deploy/miservice/state
-chmod 700 deploy/app/state deploy/miservice/state
-test -e deploy/go2rtc/state/go2rtc.yaml || \
-  cp deploy/go2rtc/go2rtc.example.yaml deploy/go2rtc/state/go2rtc.yaml
-test -e .env.poc || cp .env.poc.example .env.poc
-test -e .env || cp .env.example .env
-chmod 600 .env.poc .env
-```
-
-这些本地环境文件和状态目录已被 Git 及 Docker 构建上下文忽略。不要提交其中的账号、密码、
-Token、DID、局域网地址或完整 `xiaomi://` 地址。
-
-## 配置摄像头
-
-### 1. 启动 go2rtc
-
-```bash
-docker compose up -d go2rtc
-docker compose ps go2rtc
-docker compose logs --tail=20 go2rtc
-curl --fail --show-error http://127.0.0.1:1984/api
-```
-
-`go2rtc` 的管理 API 默认只监听服务器的 `127.0.0.1:1984`。如需从另一台电脑打开其管理
-页面，先建立 SSH 隧道：
-
-```bash
-ssh -L 1984:127.0.0.1:1984 SERVER_USER@SERVER_IP
-```
-
-然后在该电脑访问 `http://127.0.0.1:1984`。
-
-### 2. 添加小米摄像头
-
-在 go2rtc 页面中登录拥有摄像头的小米账号，从设备列表中按设备名称、型号和实际预览画面
-确认目标摄像头，并记录登录后显示的账号标识、令牌和每台设备的完整 `xiaomi://` 源地址。
-当前 go2rtc 版本不会把这些内容通过页面写回 YAML，需要直接编辑宿主机配置：
-
-```bash
-vi deploy/go2rtc/state/go2rtc.yaml
-```
-
-将配置整理为以下结构；`xxx`、`xx` 和 `192.168.x.x` 都是占位符，必须替换为实际值：
+在 `deploy/go2rtc/state/go2rtc.yaml` 中加入摄像头流。例如：
 
 ```yaml
-api:
-  listen: "127.0.0.1:1984"
-  local_auth: false
-rtsp:
-  listen: "127.0.0.1:8554"
-webrtc:
-  listen: ""
-log:
-  format: json
-  level: info
-  output: stdout
-xiaomi:
-  "xxx": xxx
 streams:
-  cam1:
-    - "xiaomi://xxx:cn@192.168.x.x?did=xx&model=xxx&subtype=sd"
+  nursery: rtsp://camera-user:camera-password@192.168.1.20/live
 ```
 
-每台摄像头使用稳定且唯一的流名称，例如 `cam1`、`cam2`；名称会原样显示在 GuDuck 管理页中。
-复制完整源地址时不要手工重写账号、Token、DID、型号或 IP；如果 `sd` 不稳定，只修改
-`subtype` 为 `auto`、`1` 或 `2`，选择能够持续更新且码率最低的码流。保存后重启 go2rtc：
+编辑 `.env`，至少把 `WEB_HOST` 设置为服务器的局域网地址。其他检测参数可沿用默认值。然后启动：
 
 ```bash
-docker compose restart go2rtc
+docker compose up -d --build go2rtc app
+docker compose ps
+docker compose logs --tail=100 app
 ```
 
-配置会保存在 `deploy/go2rtc/state/go2rtc.yaml`。该文件包含家庭设备凭据，不得提交或公开。
-
-确认所有固定名称已经注册：
-
-```bash
-curl --fail --silent --show-error http://127.0.0.1:1984/api/streams \
-  | python3 -m json.tool
-```
-
-输出中必须出现准备接入 GuDuck 的每个流名称。摄像头也必须已通电、开机，并在米家 App 中
-显示在线。应用只会在启动时和人工点击“刷新摄像头”时读取这份列表，不会后台轮询。
-
-## 配置小爱音箱
-
-### 1. 查询音箱 DID
-
-在 `.env.poc` 中填写拥有目标音箱的小米账号和密码，暂时保留 `MI_DID=` 为空：
-
-```dotenv
-MI_USER='小米账号'
-MI_PASS='小米账号密码'
-MI_DID=
-```
-
-账号或密码包含 `$`、`#`、空格等字符时应使用单引号，避免 Compose 插值。然后构建工具镜像
-并查询账号下的设备：
-
-```bash
-docker compose --profile tools build probe
-docker compose --profile tools run --rm \
-  --entrypoint python probe -m miservice list
-```
-
-小米服务可能要求在终端输入手机验证码。根据设备名称“小米小爱音箱 Play 增强版”和型号
-`xiaomi.wifispeaker.l05c` 找到目标音箱，把该条目的数值 `did` 填入 `.env.poc` 的
-`MI_DID`。不要使用摄像头 DID、MiNA `deviceID`、IP、MAC 地址或型号字符串代替。
-
-设备列表可能包含 Token 等隐私数据，不要保存、提交或粘贴完整输出。
-
-### 2. 持久化登录 Token
-
-上面的命令会把 MiService 登录状态写入 `deploy/miservice/state/.mi.token`。该目录同时挂载到
-工具容器和常驻应用，因此重建容器后通常不需要再次输入验证码。
-
-确认文件存在并收紧权限：
-
-```bash
-sudo test -s deploy/miservice/state/.mi.token
-sudo chmod 600 deploy/miservice/state/.mi.token
-sudo stat -c '%a %n' deploy/miservice/state deploy/miservice/state/.mi.token
-```
-
-再次执行设备查询；正常情况下不再要求验证码：
-
-```bash
-docker compose --profile tools run --rm \
-  --entrypoint python probe -m miservice list
-```
-
-## 配置应用
-
-编辑 `.env`，至少填写以下内容：
-
-```dotenv
-MI_USER='小米账号'
-MI_PASS='小米账号密码'
-MI_SPEAKERS_JSON='[{"id":"living_room","name":"客厅音箱","did":"音箱数值DID"},{"id":"bedroom","name":"卧室音箱","did":"另一个音箱数值DID"}]'
-GO2RTC_API_URL=http://127.0.0.1:1984
-GO2RTC_RTSP_BASE_URL=rtsp://127.0.0.1:8554
-WEB_HOST=0.0.0.0
-WEB_PORT=8080
-```
-
-`MI_USER`、`MI_PASS` 和 `MI_SPEAKERS_JSON` 中的 DID 必须与已经通过 MiService 查询的同一
-账号及音箱一致。`id` 是应用内部稳定且唯一的英文标识，`name` 是管理页显示名称；数组中的
-第一个音箱是新发现摄像头的默认配对音箱。至少配置一个音箱，且不能重复 `id` 或 DID。
-`WEB_HOST` 应填写服务器在家庭局域网中的固定 IPv4 地址，不要填写 `SERVER_LAN_IP`、
-`0.0.0.0` 或 Docker 网桥地址。可以使用以下命令查看服务器地址：
-
-```bash
-ip -4 -brief address
-```
-
-其余参数可以先保留默认值：
-
-| 环境变量 | 默认值 | 说明 |
-| --- | --- | --- |
-| `DATA_DIR` | `/var/lib/guduck/data` | SQLite 状态目录 |
-| `MODEL` | `/opt/guduck/models/person_detection_mediapipe_2023mar.onnx` | 人员检测模型 |
-| `OBJECT_MODEL` | `/opt/guduck/models/object_detection_nanodet_2022nov.onnx` | 绘本物体检测模型 |
-| `OBJECTS365_MODEL` | `/opt/guduck/models/custom/object_detection_objects365_yolo26n_416.onnx` | Objects365 ONNX 模型 |
-| `DETECTION_FPS` | `1.0` | 每秒检测帧数 |
-| `PERSON_THRESHOLD` | `0.55` | 人员检测置信度阈值，范围为 0 到 1 |
-| `LEAVE_SECONDS` | `10.0` | 连续无人多久后判定人员离开 |
-| `WELCOME_COOLDOWN_SECONDS` | `60.0` | 两次欢迎播报之间的最短间隔 |
-
-## 安装 Objects365 模型
-
-Objects365 模型不随 GuDuck 镜像发布。目标机在完成 `.env` 配置后，可以在仓库根目录执行下面
-的一条命令；脚本会下载官方 checkpoint、校验 SHA384，在临时虚拟环境中导出固定的
-`416x416` 静态 ONNX，备份旧模型，更新 `OBJECTS365_MODEL`，并验证容器内 OpenCV DNN 能够
-加载它：
-
-```bash
-bash scripts/install-objects365.sh
-```
-
-脚本需要目标机具备 `curl`、`python3-venv`、`sha384sum`、Docker Compose v2 和可用的 Docker
-daemon。导出依赖（`ultralytics==8.4.138`、`onnx==1.19.1`）和 checkpoint 只会写入临时目录，
-不会安装进 GuDuck 镜像。官方发布的是 checkpoint，ONNX 文件由仓库中的导出器生成：
+浏览器打开：
 
 ```text
-Checkpoint: https://github.com/ultralytics/assets/releases/download/v8.4.0/yolo26n-objv1-150.pt
-SHA384:     67104718c37bd2277a98390bcf5bf841d36de3db8b92abadb40f4db05e3710433ce8145d62aa6eda373fa79399b506f9
+http://SERVER_LAN_IP:8080/settings
 ```
 
-模型会保存到 `deploy/app/models/object_detection_objects365_yolo26n_416.onnx`，该目录通过
-Compose 只读挂载到容器。安装完成后打开 GuDuck「设置」选择 `Objects365`，再为需要的摄像头
-开启“绘本物体播报”规则；脚本不会自动改变当前检测器选择。
+## 小米账号与音箱绑定
 
-## 启动应用
+首次使用时，在设置页完成以下操作：
 
-构建应用镜像并启动 go2rtc 与 GuDuck：
+1. 输入小米账号和密码并开始授权；页面会每秒通过 AJAX 查询状态，不会整页刷新。
+2. 如果小米要求验证码，在当前页面输入验证码并提交。
+3. 授权成功后刷新设备列表。列表以 MiNA 返回结果为准，全部音箱均可选择。
+4. 勾选要绑定的音箱，可修改界面显示名称；之前已绑定的设备默认保持勾选。
+5. 可手动点击“测试”。测试结果不阻止保存。
+6. 保存选择。
+
+如果取消勾选的音箱正在被摄像头使用，界面会先列出受影响摄像头。确认后仍可保存，这些摄像头会保留规则启用意图，但显示音箱不可用并暂停运行。为摄像头改绑可用音箱后会恢复。
+
+MiNA 暂时没有返回某台既有绑定设备时，应用会保留该绑定记录并标记不可用，不会因为一次刷新失败而删除。授权 token 过期后，设置页会提示重新授权；重新授权成功后绑定和规则继续使用。
+
+本版本不导入旧的账号配置或外部 token 文件。升级后直接在设置页重新授权并选择音箱。
+
+## 摄像头与规则
+
+打开首页后，应用会从 go2rtc 自动发现流。新摄像头默认没有音箱绑定，必须先在设置页选择一台当前可用的音箱，再启用规则。
+
+规则启用后，如果对应音箱离线、未绑定或需要重新授权：
+
+- 摄像头规则的启用选择保持不变；
+- 检测运行会暂停，不会继续积压播报；
+- 同一绑定恢复可用后自动恢复运行。
+
+摄像头快照仅用于当前界面的即时预览和本地检测，不作为运行时图片档案保存。
+
+## 模型
+
+默认人员检测和 NanoDet 模型随应用镜像路径配置。可选的 Objects365 模型安装到 `deploy/app/models`：
 
 ```bash
-docker compose build app
-docker compose up -d go2rtc app
-docker compose ps go2rtc app
-docker compose logs --tail=50 app
+./scripts/install-objects365.sh
 ```
 
-首次构建会下载 Python 依赖和人员检测模型，需要能够访问互联网。应用首次启动加载模型并等待
-摄像头画面时，容器可以短暂显示 `health: starting`。
+模型切换在管理界面完成。新模型只有在加载成功后才会成为当前选择；失败时保留原选择。
 
-等待约 60 秒后检查健康状态：
+## 数据备份与恢复
 
-```bash
-server_lan_ip=$(sed -n 's/^WEB_HOST=//p' .env)
-curl --fail --silent --show-error "http://${server_lan_ip}:8080/healthz" \
-  | python3 -m json.tool
-```
-
-应用启动后会发现 `go2rtc` 当前所有码流并保存摄像头记录，但新摄像头的两条规则全部保持
-关闭，因此不会启动 FFmpeg 或检测模型；管理页会明确显示“未启动（规则关闭）”。摄像头
-关闭或临时断线时，接口仍可访问，对应摄像头会显示降级，其他摄像头继续运行。
-
-从同一局域网中的浏览器打开：
-
-```text
-http://SERVER_IP:8080/
-```
-
-管理页中的摄像头名称直接来自 `go2rtc`。需要新增摄像头时，先在 `go2rtc` 保存码流，再点击
-“刷新摄像头”；刷新是手动操作，不会产生额外轮询。为每台摄像头选择固定的播放音箱并开启
-“人员进入欢迎”或“绘本物体播报”规则后，开关会原地更新而不会刷新整个页面。物体规则启用
-后的首帧立即检测，之后每秒做一次 64x64 低成本变化判断，变化后立即检测，不等待画面稳定，
-最多播报三个不同的英文类别，物理绘本大幅书本会被过滤。先让画面连续无人至少 10 秒，
-再让人员正常进入画面进行验证。人员持续留在画面中时不会重复播报；再次播报需要人员离开
-至少 10 秒，并等待默认 60 秒冷却结束。
-
-顶部“设置”页面中的欢迎词每行一条，保存后下一次触发立即使用，无需重启。设置页也提供
-全局物体检测器选择，并列出当前检测器的固定支持类别；不在列表内的绘本对象不会播报。
-新数据库默认使用 NanoDet。选择已部署的检测器并应用后会立即切换，所有摄像头共用该选择，
-重启后仍会保留；未找到模型文件的选项会显示为不可用。模型加载失败时继续使用原检测器，
-不会保存失败的选择。新数据库默认提供 10 句英语欢迎语；升级时仅会替换旧版本自带的 3 句
-中文默认值，不会覆盖用户修改过的内容。开启第 4 台及更多摄像头时页面会提示当前服务器
-负载可能升高，但不会阻止操作。没有任何已开启视觉规则时，应用不会保留 FFmpeg 解码进程
-或检测模型。
-
-### 设置检测区域
-
-在管理页找到目标摄像头并打开“检测区域”，等待当前完整画面出现后，在画面上划定矩形或输入
-百分比坐标，然后保存。一个摄像头只有一个检测区域，该区域同时应用于人员进入欢迎和绘本物体
-播报；保存时只会短暂重启这个摄像头的检测流程，不影响其他摄像头。使用“恢复全画面”并保存
-即可取消区域限制。
-
-摄像头离线或无法取得当前画面时，不能盲改区域，只能保存“恢复全画面”的结果。检测区域按
-当前视频画面的相对坐标保存；摄像头发生移动、旋转、分辨率或宽高比变化后，应用不会自动匹配
-或重映射区域，需要重新检查并划定。
-
-## 常用运维命令
-
-查看状态和日志：
-
-```bash
-docker compose ps go2rtc app
-docker compose logs --tail=100 go2rtc app
-```
-
-重启应用：
-
-```bash
-docker compose restart app
-```
-
-停止应用但保留 go2rtc：
+SQLite 数据库是小米授权 token、音箱绑定、摄像头设置和事件记录的唯一生产持久化来源。备份前短暂停止应用，复制整个状态目录，再启动：
 
 ```bash
 docker compose stop app
+cp -a deploy/app/state deploy/app/state.backup
+docker compose start app
 ```
 
-升级代码后重建应用，数据库、摄像头配置、音箱配对和 MiService Token 会保留在宿主机：
+恢复时同样先停止应用，用可信备份替换状态目录，并重新检查目录和文件权限。备份包含授权 token，应按密码材料保护。
 
-```bash
-git pull --ff-only
-docker compose build app
-docker compose up -d app
-```
+## 开发与验证
 
-如果管理页显示音箱认证需要重新登录，重新运行一次交互式 `miservice list`，完成验证码验证后
-执行：
-
-```bash
-sudo chmod 600 deploy/miservice/state/.mi.token
-docker compose restart app
-```
-
-## 数据与安全
-
-- 管理页无账号认证，只应在可信局域网中使用。
-- 不要通过路由器转发 `8080`、`1984` 或 `8554` 端口。
-- 不要提交 `.env.poc`、`.env`、`deploy/*/state/` 或 `artifacts/`。
-- 应用不持久化图片、视频或音频；`deploy/app/state/` 只保存 SQLite 规则状态与事件记录。
-- 音箱 DID 只保存在私有环境文件中，不会显示在管理页、状态接口或事件记录中。
-- MiService 直连不经过 Home Assistant，但仍会通过互联网调用小米服务。
-
-## 本地开发
-
-从旧版 editable installation 升级时，先卸载旧 distribution，避免虚拟环境中残留失效的
-`daihougou` 命令，再安装 GuDuck：
-
-```bash
-.venv/bin/pip uninstall -y daihougou
-.venv/bin/pip install -e '.[dev]'
-```
-
-新环境只需执行第二条命令。运行 Python、JavaScript 与静态检查：
+创建开发环境后运行：
 
 ```bash
 .venv/bin/pytest -q
+.venv/bin/ruff check src tests
 node --test tests/js/region-editor.test.js
-.venv/bin/ruff check .
 ```
 
-## 详细运行手册
-
-摄像头码流验证、音箱单次试播、稳定性测试、认证故障处理和完整验收步骤见
-[设备兼容性 PoC 与 GuDuck 运行手册](docs/poc-runbook.md)。
-
-通用物体识别的本地语料准备、Objects365 导出、物品单模型门禁和可选双摄联调见
-[通用物体识别 PoC 运行手册](docs/object-category-detection-poc-runbook.md)。
-
-当前 NanoDet 基线的真实语料结果记录在
-[`docs/validation/object-category-announcement-poc.md`](docs/validation/object-category-announcement-poc.md)，
-该记录是风险豁免而非质量门禁通过；默认关闭物体规则，启用前请在目标机器观察实际播报。
+真实小米账号登录和音箱试听需要在部署环境中手动完成。自动化测试使用假的账号与 MiNA 服务，不会向真实设备发送播报。
 
 ## 许可证
 
-本项目使用 [MIT License](LICENSE)。
+见 [LICENSE](LICENSE)。
