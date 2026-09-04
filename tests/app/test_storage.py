@@ -581,14 +581,36 @@ def test_binding_save_requires_scoped_exact_one_time_confirmation(tmp_path: Path
     assert confirmed.saved is True
     assert confirmed.confirmation_id is None
     assert confirmed.affected_camera_ids == ("front",)
-    assert storage.camera_speaker_id("front") is None
+    assert storage.camera_speaker_id("front") == first.binding_id
     assert storage.camera_speaker_id("back") == second.binding_id
     after = {binding.binding_id: binding for binding in storage.list_speaker_bindings()}
     assert after[first.binding_id].bound is False
     assert after[first.binding_id].available is False
     assert after[second.binding_id].bound is True
+
+    storage.upsert_discovered_speakers(
+        [
+            DiscoveredSpeaker(
+                after[first.binding_id].device_id,
+                after[first.binding_id].mina_name,
+                after[first.binding_id].hardware,
+                None,
+            )
+        ]
+    )
+    rebound = storage.save_speaker_bindings([first.binding_id, second.binding_id])
+
+    assert rebound.saved is True
+    assert storage.camera_speaker_id("front") == first.binding_id
+    restored = {
+        binding.binding_id: binding for binding in storage.list_speaker_bindings()
+    }
+    assert restored[first.binding_id].bound is True
+    assert restored[first.binding_id].available is True
     with pytest.raises(ValueError, match="confirmation"):
-        storage.save_speaker_bindings([second.binding_id], preview.confirmation_id)
+        storage.save_speaker_bindings(
+            [first.binding_id, second.binding_id], preview.confirmation_id
+        )
 
 
 def test_binding_confirmation_expires_and_unknown_binding_is_rejected(tmp_path: Path) -> None:
@@ -687,7 +709,7 @@ def test_account_replacement_and_bindings_commit_atomically_after_confirmation(
     bindings = {binding.binding_id: binding for binding in storage.list_speaker_bindings()}
     assert bindings[old.binding_id].bound is False
     assert bindings[new_binding_id].bound is True
-    assert storage.camera_speaker_id("front") is None
+    assert storage.camera_speaker_id("front") == old.binding_id
 
 
 @pytest.mark.parametrize("kind", ["speaker_unavailable", "speaker_reconfigured"])

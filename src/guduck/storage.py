@@ -895,15 +895,6 @@ class Storage:
                     """,
                     (now, *sorted(removed)),
                 )
-            if affected:
-                placeholders = ",".join("?" for _ in removed)
-                connection.execute(
-                    f"""
-                    UPDATE cameras SET speaker_id = NULL
-                    WHERE speaker_id IN ({placeholders})
-                    """,
-                    tuple(sorted(removed)),
-                )
             return BindingSaveResult(True, None, affected)
 
     def replace_xiaomi_configuration(
@@ -1055,15 +1046,6 @@ class Storage:
                           )
                         """,
                         (now, *sorted(removed)),
-                    )
-                if affected:
-                    placeholders = ",".join("?" for _ in removed)
-                    connection.execute(
-                        f"""
-                        UPDATE cameras SET speaker_id = NULL
-                        WHERE speaker_id IN ({placeholders})
-                        """,
-                        tuple(sorted(removed)),
                     )
                 connection.execute(
                     """

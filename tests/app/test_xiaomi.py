@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from collections import deque
 from pathlib import Path
 
@@ -173,6 +174,7 @@ def test_ajax_auth_waits_for_otp_discovers_all_and_commits_selected_binding(
         assert storage.get_xiaomi_account() is None
         assert manager._attempt is not None
         assert manager._attempt.password == ""
+        assert accounts.accounts[0].password == ""
         selected = status.devices[0].id
 
         result = await manager.save_bindings([selected], display_names={selected: "门口音箱"})
@@ -188,6 +190,10 @@ def test_ajax_auth_waits_for_otp_discovers_all_and_commits_selected_binding(
         assert bindings[0].bound is True
         assert bindings[0].display_name == "门口音箱"
         assert accounts.accounts[0].otp_value == "123456"
+        saved_status = manager.status()
+        saved_device = next(item for item in saved_status.devices if item.id == selected)
+        assert saved_device.checked is True
+        assert saved_device.name == "门口音箱"
         await manager.stop()
 
     asyncio.run(scenario())
@@ -213,6 +219,34 @@ def test_auth_with_zero_devices_can_be_saved_but_is_not_runtime_ready(tmp_path: 
         assert manager.status().state == "devices_ready"
         assert storage.get_xiaomi_account() is not None
         assert manager.has_available_binding(None) is False
+        await manager.stop()
+
+    asyncio.run(scenario())
+
+
+def test_binding_save_updates_candidate_checkbox_state_without_refresh(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        storage = Storage(tmp_path / "app.db")
+        storage.initialize()
+        mina = FakeMiNA([[device()]])
+        accounts = FakeAccountFactory([mina])
+        manager = XiaomiAccountManager(
+            storage,
+            account_factory=accounts,
+            mina_factory=lambda account: account.mina,
+        )
+        attempt_id = await manager.start_auth("owner", "password")
+        await wait_for_state(manager, attempt_id, "devices_ready")
+        binding_id = manager.status(attempt_id).devices[0].id
+        await manager.save_bindings([binding_id])
+
+        assert manager.status().devices[0].checked is True
+
+        await manager.save_bindings([])
+
+        assert manager.status().devices[0].checked is False
         await manager.stop()
 
     asyncio.run(scenario())
@@ -248,6 +282,7 @@ def test_starting_new_attempt_cancels_old_and_cancel_keeps_safe_terminal_status(
         assert manager._attempt is not None
         assert manager._attempt.password == ""
         assert manager._attempt.token_store.token is None
+        assert accounts.accounts[1].password == ""
 
     asyncio.run(scenario())
 
@@ -273,6 +308,7 @@ def test_attempt_expires_and_releases_in_memory_credentials(tmp_path: Path) -> N
         assert manager._attempt.password == ""
         assert manager._attempt.token_store.token is None
         assert accounts.accounts[0].closed is True
+        assert accounts.accounts[0].password == ""
 
     asyncio.run(scenario())
 
@@ -367,7 +403,11 @@ def test_reauthorization_keeps_old_account_running_until_confirmed_atomic_commit
 
         second_attempt = await manager.start_auth("new-owner", "new-password")
         await wait_for_state(manager, second_attempt, "devices_ready")
-        new_binding_id = manager.status(second_attempt).devices[0].id
+        replacement_status = manager.status(second_attempt)
+        new_binding_id = replacement_status.devices[0].id
+        assert replacement_status.bindings == ()
+        with pytest.raises(XiaomiStateError, match="unknown_speaker_binding"):
+            await manager.save_bindings([old_binding_id, new_binding_id])
         preview = await manager.save_bindings([new_binding_id])
 
         assert preview.saved is False
@@ -391,7 +431,85 @@ def test_reauthorization_keeps_old_account_running_until_confirmed_atomic_commit
         assert account.username == "new-owner"
         assert accounts.accounts[0].closed is True
         assert accounts.accounts[1].closed is False
-        assert storage.camera_speaker_id("front") is None
+        assert storage.camera_speaker_id("front") == old_binding_id
+        await manager.stop()
+
+    asyncio.run(scenario())
+
+
+def test_same_account_reauthorization_can_keep_a_temporarily_missing_binding(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        storage = Storage(tmp_path / "app.db")
+        storage.initialize()
+        accounts = FakeAccountFactory(
+            [FakeMiNA([[device("old-device", "客厅", None)]]), FakeMiNA([[]])]
+        )
+        manager = XiaomiAccountManager(
+            storage,
+            account_factory=accounts,
+            mina_factory=lambda account: account.mina,
+        )
+        first_attempt = await manager.start_auth("owner", "first-password")
+        await wait_for_state(manager, first_attempt, "devices_ready")
+        binding_id = manager.status(first_attempt).devices[0].id
+        await manager.save_bindings([binding_id])
+
+        second_attempt = await manager.start_auth("owner", "second-password")
+        await wait_for_state(manager, second_attempt, "devices_ready")
+        status = manager.status(second_attempt)
+
+        assert status.devices == ()
+        assert tuple(binding.id for binding in status.bindings) == (binding_id,)
+        assert status.bindings[0].checked is True
+        saved = await manager.save_bindings([binding_id])
+
+        assert saved.saved is True
+        assert storage.list_speaker_bindings()[0].bound is True
+        await manager.stop()
+
+    asyncio.run(scenario())
+
+
+def test_confirmed_unbind_preserves_camera_reference_and_reselect_recovers(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        storage = Storage(tmp_path / "app.db")
+        storage.initialize()
+        mina = FakeMiNA([[device()]])
+        accounts = FakeAccountFactory([mina])
+        speaker_runtime = FakeSpeakerRuntime()
+        manager = XiaomiAccountManager(
+            storage,
+            account_factory=accounts,
+            mina_factory=lambda account: account.mina,
+            speaker_runtime=speaker_runtime,
+        )
+        attempt_id = await manager.start_auth("owner", "password")
+        await wait_for_state(manager, attempt_id, "devices_ready")
+        binding_id = manager.status(attempt_id).devices[0].id
+        await manager.save_bindings([binding_id])
+        storage.sync_cameras(["front"])
+        storage.set_camera_speaker("front", binding_id)
+
+        preview = await manager.save_bindings([])
+        unbound = await manager.save_bindings(
+            [], confirmation_id=preview.confirmation_id
+        )
+
+        assert unbound.saved is True
+        assert manager.status().state == "devices_ready"
+        assert storage.camera_speaker_id("front") == binding_id
+        assert speaker_runtime.replacements[-1] == ((), ())
+
+        rebound = await manager.save_bindings([binding_id])
+
+        assert rebound.saved is True
+        assert manager.status().state == "ready"
+        assert storage.camera_speaker_id("front") == binding_id
+        assert speaker_runtime.replacements[-1] == ((binding_id,), (binding_id,))
         await manager.stop()
 
     asyncio.run(scenario())
@@ -417,9 +535,28 @@ def test_failed_auth_has_stable_error_and_releases_secrets(tmp_path: Path) -> No
         assert manager._attempt.password == ""
         assert manager._attempt.token_store.token is None
         assert accounts.accounts[0].closed is True
+        assert accounts.accounts[0].password == ""
         assert storage.get_xiaomi_account() is None
 
     asyncio.run(scenario())
+
+
+def test_manager_disables_unsanitized_miservice_logging(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    logger = logging.getLogger("miservice")
+    monkeypatch.setattr(logger, "disabled", False)
+    monkeypatch.setattr(logger, "propagate", True)
+    monkeypatch.setattr(logger, "level", logging.WARNING)
+    storage = Storage(tmp_path / "app.db")
+
+    XiaomiAccountManager(storage)
+
+    assert logger.disabled is True
+    assert logger.propagate is False
+    assert logger.level > logging.CRITICAL
+    logger.disabled = False
+    assert logger.isEnabledFor(logging.CRITICAL) is False
 
 
 def test_restart_loads_account_without_automatic_device_discovery(tmp_path: Path) -> None:

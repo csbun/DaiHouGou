@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
+import logging
 import secrets
 import threading
 import time
@@ -27,6 +29,8 @@ TEST_PHRASE = "音箱配置测试"
 
 
 class AccountLike(Protocol):
+    password: str
+
     async def login(self, sid: str) -> bool: ...
 
 
@@ -131,6 +135,11 @@ class XiaomiAccountManager:
         on_change: ChangeCallback | None = None,
         speaker_runtime: SpeakerRuntime | None = None,
     ) -> None:
+        # MiService formats usernames and raw authentication responses into exceptions.
+        miservice_logger = logging.getLogger("miservice")
+        miservice_logger.disabled = True
+        miservice_logger.propagate = False
+        miservice_logger.setLevel(logging.CRITICAL + 1)
         self._storage = storage
         self._account_factory = account_factory
         self._mina_factory = mina_factory
@@ -216,7 +225,7 @@ class XiaomiAccountManager:
                 expires_at=attempt.expires_at,
                 error_code=attempt.error_code,
                 devices=self._public_candidates(attempt.candidates),
-                bindings=self.display_bindings(),
+                bindings=self._bindings_for_attempt(attempt),
             )
         return XiaomiStatus(
             state=self._state,
@@ -278,9 +287,13 @@ class XiaomiAccountManager:
         candidates = attempt.candidates if attempt and attempt.state == "devices_ready" else self._active_snapshot
         public_ids = frozenset(candidates)
         existing = {binding.binding_id: binding for binding in self._storage.list_speaker_bindings()}
-        allowed = public_ids | frozenset(
-            binding_id for binding_id, binding in existing.items() if binding.bound
-        )
+        replacement_attempt = attempt is not None and attempt.state == "devices_ready"
+        preserve_missing = not replacement_attempt or self._same_persisted_account(attempt)
+        allowed = public_ids
+        if preserve_missing:
+            allowed |= frozenset(
+                binding_id for binding_id, binding in existing.items() if binding.bound
+            )
         selected = tuple(dict.fromkeys(selected_ids))
         if not frozenset(selected) <= allowed:
             raise XiaomiStateError("unknown_speaker_binding")
@@ -320,6 +333,7 @@ class XiaomiAccountManager:
             )
             if not result.saved:
                 return result
+            self._update_candidate_selection(candidates, selected, names)
             old_account_to_close = self._active_account
             self._active_account = attempt.account
             self._active_mina = attempt.mina
@@ -345,6 +359,7 @@ class XiaomiAccountManager:
             )
             if not result.saved:
                 return result
+            self._update_candidate_selection(candidates, selected, names)
         self._state = "ready" if selected else "devices_ready"
         self._error_code = None
         try:
@@ -452,7 +467,9 @@ class XiaomiAccountManager:
                 otp_callback=lambda method: self._request_otp(attempt, method),
             )
             attempt.mina = self._mina_factory(attempt.account)
-            if not await attempt.account.login("micoapi"):
+            login_succeeded = await attempt.account.login("micoapi")
+            self._clear_account_password(attempt.account)
+            if not login_succeeded:
                 raise XiaomiStateError("auth_failed")
             if self._attempt is not attempt:
                 return
@@ -478,6 +495,7 @@ class XiaomiAccountManager:
             await self._finish_attempt(attempt, "failed")
         finally:
             attempt.password = ""
+            self._clear_account_password(attempt.account)
 
     async def _request_otp(self, attempt: _AuthAttempt, method: str) -> str:
         if self._attempt is not attempt:
@@ -514,6 +532,7 @@ class XiaomiAccountManager:
         )
         if pending:
             await asyncio.gather(*pending, return_exceptions=True)
+        self._clear_account_password(attempt.account)
         await self._close_account(attempt.account)
         attempt.account = None
         attempt.mina = None
@@ -633,9 +652,40 @@ class XiaomiAccountManager:
 
     @staticmethod
     def _serialize_token(token: Mapping[str, object]) -> str:
-        import json
-
         return json.dumps(dict(token), ensure_ascii=False)
+
+    @staticmethod
+    def _update_candidate_selection(
+        candidates: Mapping[str, _Candidate],
+        selected_ids: Sequence[str],
+        display_names: Mapping[str, str],
+    ) -> None:
+        selected = frozenset(selected_ids)
+        for binding_id, candidate in candidates.items():
+            candidate.checked = binding_id in selected
+            if binding_id in display_names:
+                candidate.display_name = display_names[binding_id].strip()
+
+    def _bindings_for_attempt(self, attempt: _AuthAttempt) -> tuple[PublicSpeaker, ...]:
+        if attempt.state == "devices_ready" and not self._same_persisted_account(attempt):
+            return ()
+        return self.display_bindings()
+
+    def _same_persisted_account(self, attempt: _AuthAttempt) -> bool:
+        persisted = self._storage.get_xiaomi_account()
+        current_token = attempt.token_store.token
+        if persisted is None or current_token is None:
+            return False
+        try:
+            persisted_token = json.loads(persisted.token_json)
+        except json.JSONDecodeError:
+            persisted_token = None
+        if isinstance(persisted_token, dict):
+            old_user_id = persisted_token.get("userId")
+            new_user_id = current_token.get("userId")
+            if old_user_id is not None and new_user_id is not None:
+                return str(old_user_id) == str(new_user_id)
+        return persisted.username == attempt.username
 
     @staticmethod
     def _is_auth_error(error: Exception) -> bool:
@@ -676,6 +726,15 @@ class XiaomiAccountManager:
     async def _reject_runtime_otp(self, method: str) -> str:
         del method
         raise XiaomiStateError("auth_required")
+
+    @staticmethod
+    def _clear_account_password(account: AccountLike | None) -> None:
+        if account is None or not hasattr(account, "password"):
+            return
+        try:
+            account.password = ""
+        except (AttributeError, TypeError):
+            pass
 
     @staticmethod
     async def _close_account(account: AccountLike | None) -> None:
