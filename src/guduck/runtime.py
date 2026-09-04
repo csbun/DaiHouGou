@@ -20,7 +20,7 @@ from guduck.rules import (
     SpeechAction,
     WelcomeRule,
 )
-from guduck.settings import ObjectDetectorAdapter, SpeakerConfig
+from guduck.settings import ObjectDetectorAdapter
 from guduck.speaker_worker import SpeakerManager
 from guduck.storage import CameraConfig, Storage, StoredEvent
 from guduck.vision.frame_source import OBJECT_FRAME_SIZE, PERSON_FRAME_SIZE
@@ -60,11 +60,28 @@ class ManagedSpeakerManager(Protocol):
 
     def submit(self, action: SpeechAction) -> bool: ...
 
+    def available(self, speaker_id: str | None) -> bool: ...
+
+
+class BoundSpeakerView(Protocol):
+    id: str
+    name: str
+
+
+class ManagedXiaomiAccount(Protocol):
+    async def start(self) -> None: ...
+
+    async def stop(self) -> None: ...
+
+    def display_bindings(self) -> Sequence[BoundSpeakerView]: ...
+
 
 @dataclass(frozen=True)
 class SpeakerOption:
     id: str
     name: str
+    available: bool = False
+    status: str = "unknown"
 
 
 @dataclass(frozen=True)
@@ -96,9 +113,10 @@ class RuleView:
 @dataclass(frozen=True)
 class CameraView:
     stream_id: str
-    speaker_id: str
+    speaker_id: str | None
     speaker: str
     available: bool | None
+    speaker_available: bool = False
     rules: tuple[RuleView, ...] = ()
     stream: str = "stopped"
     presence: str = "unknown"
@@ -154,6 +172,7 @@ class CameraView:
             return {
                 "stream_id": self.stream_id,
                 "available": self.available,
+                "speaker_available": self.speaker_available,
                 "rule_enabled": self.rule_enabled,
                 "stream": self.stream,
                 "detector": self.detector,
@@ -165,6 +184,7 @@ class CameraView:
         return {
             "stream_id": self.stream_id,
             "available": self.available,
+            "speaker_available": self.speaker_available,
             "rules": [
                 {
                     "id": rule.id,
@@ -244,7 +264,7 @@ class Runtime:
         storage: Storage,
         discovery: Go2RtcClient | Discovery,
         rtsp_base_url: str,
-        speakers: tuple[SpeakerConfig, ...],
+        xiaomi_account: ManagedXiaomiAccount,
         speaker_manager: SpeakerManager | ManagedSpeakerManager,
         scheduler: DetectionScheduler | ManagedScheduler,
         frame_source_factory: FrameSourceFactory,
@@ -254,13 +274,10 @@ class Runtime:
         object_detector_factory: ObjectDetectorFactory | None = None,
         object_detector_available: Callable[[ObjectDetectorAdapter], bool] | None = None,
     ) -> None:
-        if not speakers:
-            raise ValueError("at least one speaker is required")
         self._storage = storage
         self._discovery = discovery
         self._rtsp_base_url = rtsp_base_url
-        self._speakers = speakers
-        self._speaker_ids = frozenset(speaker.id for speaker in speakers)
+        self._xiaomi_account = xiaomi_account
         self._speaker_manager = speaker_manager
         self._scheduler = scheduler
         self._frame_source_factory = frame_source_factory
@@ -293,6 +310,7 @@ class Runtime:
             raise
         self._database_status = "ready"
         await self._speaker_manager.start()
+        await self._xiaomi_account.start()
         self._app_status = "running"
         await self.refresh_cameras()
 
@@ -310,6 +328,7 @@ class Runtime:
             elif self._scheduler.loaded:
                 await self._scheduler.stop()
             await self._speaker_manager.stop()
+            await self._xiaomi_account.stop()
             self._app_status = "stopped"
 
     async def refresh_cameras(self) -> None:
@@ -323,7 +342,7 @@ class Runtime:
                 self._discovery_status = "degraded"
                 self._last_error = "go2rtc_unavailable"
             else:
-                self._storage.sync_cameras(stream_ids, self._speakers[0].id)
+                self._storage.sync_cameras(stream_ids)
                 self._available_stream_ids = frozenset(stream_ids)
                 self._discovery_status = "ready"
                 self._last_error = ""
@@ -337,14 +356,34 @@ class Runtime:
         if rule_id not in BUILTIN_RULE_IDS or enabled is None:
             raise ValueError("unknown_rule")
         async with self._lock:
+            if enabled:
+                camera = next(
+                    (
+                        item
+                        for item in self._storage.list_cameras()
+                        if item.stream_id == camera_id
+                    ),
+                    None,
+                )
+                if camera is None:
+                    raise KeyError(camera_id)
+                if not self._speaker_manager.available(camera.speaker_id):
+                    raise ValueError("speaker_unavailable")
             self._storage.set_camera_rule_enabled(camera_id, rule_id, enabled)
             await self._reconcile()
 
     async def set_camera_speaker(self, camera_id: str, speaker_id: str) -> None:
-        if speaker_id not in self._speaker_ids:
-            raise ValueError("unknown speaker")
         async with self._lock:
+            if speaker_id not in {
+                speaker.id for speaker in self._xiaomi_account.display_bindings()
+            }:
+                raise ValueError("unknown speaker")
             self._storage.set_camera_speaker(camera_id, speaker_id)
+            await self._reconcile()
+
+    async def refresh_speaker_state(self) -> None:
+        async with self._lock:
+            await self._reconcile()
 
     async def set_camera_detection_region(self, camera_id: str, region: DetectionRegion) -> None:
         async with self._lock:
@@ -402,7 +441,8 @@ class Runtime:
             self._storage.set_object_detector_adapter(adapter)
 
     def snapshot(self) -> RuntimeSnapshot:
-        speaker_names = {speaker.id: speaker.name for speaker in self._speakers}
+        speakers = tuple(self._xiaomi_account.display_bindings())
+        speaker_names = {speaker.id: speaker.name for speaker in speakers}
         cameras = tuple(
             self._camera_view(config, speaker_names) for config in self._storage.list_cameras()
         )
@@ -421,7 +461,18 @@ class Runtime:
             discovery=self._discovery_status,
             detector=self._scheduler.status,
             speaker_auth=self._speaker_manager.auth_status,
-            speakers=tuple(SpeakerOption(speaker.id, speaker.name) for speaker in self._speakers),
+            speakers=tuple(
+                SpeakerOption(
+                    speaker.id,
+                    speaker.name,
+                    self._speaker_manager.available(speaker.id),
+                    self._speaker_manager.speaker_statuses.get(
+                        speaker.id,
+                        "unavailable",
+                    ),
+                )
+                for speaker in speakers
+            ),
             cameras=cameras,
             events=tuple(self._storage.recent_events()),
             last_error="background_task_stopped" if shared_failed else self._last_error,
@@ -430,6 +481,7 @@ class Runtime:
 
     async def _reconcile(self) -> None:
         configs = self._storage.list_cameras()
+        speaker_ids = {config.stream_id: config.speaker_id for config in configs}
         enabled_by_camera = {
             config.stream_id: frozenset(
                 rule_id
@@ -443,9 +495,15 @@ class Runtime:
             for stream_id, rule_ids in enabled_by_camera.items()
             if rule_ids
             and (self._available_stream_ids is None or stream_id in self._available_stream_ids)
+            and self._speaker_manager.available(speaker_ids[stream_id])
         }
         if self._available_stream_ids is None:
-            desired = {stream_id: ids for stream_id, ids in enabled_by_camera.items() if ids}
+            desired = {
+                config.stream_id: enabled_by_camera[config.stream_id]
+                for config in configs
+                if enabled_by_camera[config.stream_id]
+                and self._speaker_manager.available(config.speaker_id)
+            }
         self._pending_object_baselines.intersection_update(
             stream_id for stream_id, rule_ids in enabled_by_camera.items() if rule_ids
         )
@@ -473,14 +531,23 @@ class Runtime:
             )
             if rule_id in rule_ids
         }
-        for kind in DetectorKind:
-            if kind in needed:
+        if getattr(self._scheduler, "enable", None) is None:
+            if needed and not self._scheduler.loaded:
                 try:
-                    await self._enable_detector(kind)
+                    await self._scheduler.start()
                 except RuntimeError:
                     pass
-            else:
-                await self._disable_detector(kind)
+            elif not needed and self._scheduler.loaded:
+                await self._scheduler.stop()
+        else:
+            for kind in DetectorKind:
+                if kind in needed:
+                    try:
+                        await self._enable_detector(kind)
+                    except RuntimeError:
+                        pass
+                else:
+                    await self._disable_detector(kind)
 
         for stream_id, rule_ids in sorted(desired.items()):
             size = OBJECT_FRAME_SIZE if OBJECT_RULE_ID in rule_ids else PERSON_FRAME_SIZE
@@ -550,14 +617,6 @@ class Runtime:
         disable = getattr(self._scheduler, "disable", None)
         if disable is not None:
             await disable(kind)
-        elif (
-            not any(
-                self._storage.camera_rule_enabled(c.stream_id, WELCOME_RULE_ID)
-                for c in self._storage.list_cameras()
-            )
-            and self._scheduler.loaded
-        ):
-            await self._scheduler.stop()
 
     def _detector_snapshot(self, kind: DetectorKind) -> DetectorSnapshot:
         snapshot = getattr(self._scheduler, "snapshot", None)
@@ -582,6 +641,12 @@ class Runtime:
             for rule_id in BUILTIN_RULE_IDS
             if self._storage.camera_rule_enabled(config.stream_id, rule_id)
         )
+        known_speaker = (
+            config.speaker_id is not None and config.speaker_id in speaker_names
+        )
+        speaker_available = known_speaker and self._speaker_manager.available(
+            config.speaker_id
+        )
         if runtime is not None:
             state = runtime.snapshot()
             pipeline = {WELCOME_RULE_ID: state.person, OBJECT_RULE_ID: state.object}
@@ -589,26 +654,34 @@ class Runtime:
             presence = state.presence
             last_error = runtime_error or state.last_error
         else:
-            unavailable = bool(enabled_ids) and available is False
+            stream_unavailable = bool(enabled_ids) and available is False
+            bound_speaker_unavailable = bool(enabled_ids) and not speaker_available
+            paused_error = runtime_error or (
+                "speaker_unavailable"
+                if bound_speaker_unavailable
+                else "stream_unavailable"
+                if stream_unavailable
+                else ""
+            )
             from guduck.camera_runtime import PipelineSnapshot
 
             pipeline = {
                 WELCOME_RULE_ID: PipelineSnapshot(
-                    "degraded" if unavailable or runtime_error else "stopped",
+                    "degraded" if paused_error else "stopped",
                     None,
                     None,
-                    runtime_error or ("stream_unavailable" if unavailable else ""),
+                    paused_error,
                 ),
                 OBJECT_RULE_ID: PipelineSnapshot(
-                    "degraded" if unavailable or runtime_error else "stopped",
+                    "degraded" if paused_error else "stopped",
                     None,
                     None,
-                    runtime_error or ("stream_unavailable" if unavailable else ""),
+                    paused_error,
                 ),
             }
-            stream = "degraded" if unavailable or runtime_error else "stopped"
+            stream = "degraded" if stream_unavailable or runtime_error else "stopped"
             presence = "unknown"
-            last_error = runtime_error or ("stream_unavailable" if unavailable else "")
+            last_error = paused_error
         rules = tuple(
             RuleView(
                 rule_id,
@@ -650,13 +723,20 @@ class Runtime:
             for rule_id in BUILTIN_RULE_IDS
         )
         return CameraView(
-            config.stream_id,
-            config.speaker_id,
-            speaker_names.get(config.speaker_id, config.speaker_id),
-            available,
-            rules,
-            stream,
-            presence,
-            last_error,
+            stream_id=config.stream_id,
+            speaker_id=config.speaker_id if known_speaker else None,
+            speaker=(
+                speaker_names[config.speaker_id]
+                if known_speaker
+                else "未绑定"
+                if config.speaker_id is None
+                else "需要重新绑定"
+            ),
+            available=available,
+            speaker_available=speaker_available,
+            rules=rules,
+            stream=stream,
+            presence=presence,
+            last_error=last_error,
             detection_region=config.detection_region,
         )

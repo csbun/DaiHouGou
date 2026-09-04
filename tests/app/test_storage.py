@@ -688,3 +688,26 @@ def test_account_replacement_and_bindings_commit_atomically_after_confirmation(
     assert bindings[old.binding_id].bound is False
     assert bindings[new_binding_id].bound is True
     assert storage.camera_speaker_id("front") is None
+
+
+@pytest.mark.parametrize("kind", ["speaker_unavailable", "speaker_reconfigured"])
+def test_latest_rule_trigger_includes_dynamic_speaker_events(
+    tmp_path: Path,
+    kind: str,
+) -> None:
+    storage = Storage(tmp_path / "app.db")
+    storage.initialize()
+    storage.record_event(
+        EventRecord(
+            kind,
+            False,
+            rule_id=WELCOME_RULE_ID,
+            camera_id="front",
+            speaker_id="binding-id",
+        )
+    )
+
+    event = storage.latest_rule_trigger(WELCOME_RULE_ID, "front")
+
+    assert event is not None
+    assert event.kind == kind

@@ -2,6 +2,7 @@ import asyncio
 import shutil
 import subprocess
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -10,7 +11,6 @@ import pytest
 from guduck.detection_region import DetectionRegion
 from guduck.detection_scheduler import DetectionScheduler
 from guduck.runtime import Runtime
-from guduck.settings import SpeakerConfig
 from guduck.speaker import SpeakResult
 from guduck.speaker_worker import SpeakerManager
 from guduck.storage import Storage
@@ -81,6 +81,26 @@ class FakeSnapshotter:
         raise AssertionError("snapshot capture is not expected in this test")
 
 
+@dataclass(frozen=True)
+class FakeBinding:
+    id: str
+    name: str
+
+
+class FakeXiaomiAccount:
+    async def start(self) -> None:
+        pass
+
+    async def stop(self) -> None:
+        pass
+
+    def display_bindings(self) -> tuple[FakeBinding, ...]:
+        return (
+            FakeBinding("living_room", "客厅音箱"),
+            FakeBinding("bedroom", "卧室音箱"),
+        )
+
+
 def test_generated_video_routes_two_cameras_through_one_detector(
     tmp_path: Path,
 ) -> None:
@@ -119,10 +139,7 @@ def test_generated_video_routes_two_cameras_through_one_detector(
             storage=storage,
             discovery=FakeDiscovery(),
             rtsp_base_url="rtsp://127.0.0.1:8554",
-            speakers=(
-                SpeakerConfig("living_room", "客厅音箱", "safe-one"),
-                SpeakerConfig("bedroom", "卧室音箱", "safe-two"),
-            ),
+            xiaomi_account=FakeXiaomiAccount(),
             speaker_manager=manager,
             scheduler=scheduler,
             frame_source_factory=source_factory,

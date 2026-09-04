@@ -19,12 +19,33 @@ from guduck.vision.object_detector import ObjectDetector
 from guduck.vision.objects365_detector import Objects365ObjectDetector
 from guduck.vision.person_detector import PersonDetector
 from guduck.web import create_app
+from guduck.xiaomi import XiaomiAccountManager
 
 
 def create_production_app(settings: Settings | None = None) -> FastAPI:
     resolved = settings or Settings.from_mapping(os.environ)
     storage = Storage(application_database_path(resolved.data_dir))
-    speaker_manager = SpeakerManager({}, storage)
+    xiaomi_account: XiaomiAccountManager | None = None
+    runtime: Runtime | None = None
+
+    async def require_xiaomi_auth() -> None:
+        if xiaomi_account is not None:
+            await xiaomi_account.mark_auth_required()
+
+    async def refresh_speaker_state() -> None:
+        if runtime is not None:
+            await runtime.refresh_speaker_state()
+
+    speaker_manager = SpeakerManager(
+        {},
+        storage,
+        on_auth_required=require_xiaomi_auth,
+    )
+    xiaomi_account = XiaomiAccountManager(
+        storage,
+        speaker_runtime=speaker_manager,
+        on_change=refresh_speaker_state,
+    )
 
     def object_detector_for(
         adapter: ObjectDetectorAdapter,
@@ -48,7 +69,7 @@ def create_production_app(settings: Settings | None = None) -> FastAPI:
         storage=storage,
         discovery=Go2RtcClient(resolved.go2rtc_api_url),
         rtsp_base_url=resolved.go2rtc_rtsp_base_url,
-        speakers=resolved.speakers,
+        xiaomi_account=xiaomi_account,
         speaker_manager=speaker_manager,
         scheduler=scheduler,
         frame_source_factory=frame_source_factory,

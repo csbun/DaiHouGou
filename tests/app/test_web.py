@@ -36,6 +36,7 @@ def snapshot_fixture(
             speaker_id="living_room",
             speaker="客厅音箱",
             available=True,
+            speaker_available=True,
             rule_enabled=rules_enabled,
             stream="ready" if rules_enabled else "stopped",
             detector="ready" if rules_enabled else "stopped",
@@ -523,7 +524,8 @@ def test_camera_rule_command_returns_current_state_for_async_switch() -> None:
     assert response.json() == {
         "camera": {
             "stream_id": "front",
-            "available": True,
+                "available": True,
+                "speaker_available": True,
             "rule_enabled": True,
             "stream": "starting",
             "detector": "starting",

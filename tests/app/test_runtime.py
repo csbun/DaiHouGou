@@ -1,6 +1,7 @@
 import asyncio
 import time
 from collections import deque
+from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import unquote
 
@@ -10,7 +11,7 @@ from guduck.detection_region import FULL_FRAME_REGION, DetectionRegion
 from guduck.go2rtc import DiscoveryError
 from guduck.rules import OBJECT_RULE_ID, WELCOME_RULE_ID, SpeechAction
 from guduck.runtime import Runtime
-from guduck.settings import ObjectDetectorAdapter, SpeakerConfig
+from guduck.settings import ObjectDetectorAdapter
 from guduck.storage import EventRecord, Storage
 from guduck.vision.frame_source import FrameSample
 from guduck.vision.object_detector import ObjectDetection
@@ -88,11 +89,41 @@ class FakeDetectionScheduler:
         self.object_replacements.append(factory())
 
 
+@dataclass(frozen=True)
+class FakeBinding:
+    id: str
+    name: str
+    available: bool = True
+
+
+class FakeXiaomiAccountManager:
+    def __init__(self, bindings: tuple[FakeBinding, ...]) -> None:
+        self.bindings = bindings
+        self.starts = 0
+        self.stops = 0
+
+    async def start(self) -> None:
+        self.starts += 1
+
+    async def stop(self) -> None:
+        self.stops += 1
+
+    def display_bindings(self) -> tuple[FakeBinding, ...]:
+        return self.bindings
+
+
 class FakeSpeakerManager:
-    def __init__(self, storage: Storage) -> None:
+    def __init__(
+        self,
+        storage: Storage,
+        available_ids: set[str] | None = None,
+    ) -> None:
         self.storage = storage
         self.auth_status = "unknown"
         self.fatal_error = False
+        self.available_ids = (
+            {"living_room", "bedroom"} if available_ids is None else available_ids
+        )
         self.speaker_statuses = {
             "living_room": "unknown",
             "bedroom": "unknown",
@@ -106,6 +137,9 @@ class FakeSpeakerManager:
 
     def submit(self, action: SpeechAction) -> bool:
         return True
+
+    def available(self, speaker_id: str | None) -> bool:
+        return speaker_id in self.available_ids and self.auth_status != "reauth_required"
 
 
 class FakeSnapshotter:
@@ -124,6 +158,9 @@ def make_runtime(
     *,
     broken_streams: frozenset[str] = frozenset(),
     speaker_manager: FakeSpeakerManager | None = None,
+    xiaomi_account: FakeXiaomiAccountManager | None = None,
+    speaker_bindings: tuple[FakeBinding, ...] | None = None,
+    prebind_cameras: bool = True,
     snapshotter: FakeSnapshotter | None = None,
     unavailable_object_adapters: frozenset[ObjectDetectorAdapter] = frozenset(),
 ) -> tuple[
@@ -138,10 +175,26 @@ def make_runtime(
     sources: dict[str, FakeSource] = {}
     source_calls: list[tuple[str, int, DetectionRegion]] = []
     scheduler = FakeDetectionScheduler()
-    speakers = (
-        SpeakerConfig("living_room", "客厅音箱", "secret-living-did"),
-        SpeakerConfig("bedroom", "卧室音箱", "secret-bedroom-did"),
+    bindings = (
+        (
+            FakeBinding("living_room", "客厅音箱"),
+            FakeBinding("bedroom", "卧室音箱"),
+        )
+        if speaker_bindings is None
+        else speaker_bindings
     )
+    storage.initialize()
+    if prebind_cameras and bindings:
+        first_discovery = next(
+            (result for result in discoveries if isinstance(result, tuple)),
+            (),
+        )
+        storage.sync_cameras(first_discovery, bindings[0].id)
+    resolved_speaker_manager = speaker_manager or FakeSpeakerManager(
+        storage,
+        {binding.id for binding in bindings if binding.available},
+    )
+    resolved_xiaomi_account = xiaomi_account or FakeXiaomiAccountManager(bindings)
 
     def source_factory(url: str, size: int, region: DetectionRegion) -> FakeSource:
         stream_id = unquote(url.rsplit("/", 1)[-1])
@@ -154,8 +207,8 @@ def make_runtime(
         storage=storage,
         discovery=discovery,
         rtsp_base_url="rtsp://127.0.0.1:8554",
-        speakers=speakers,
-        speaker_manager=speaker_manager or FakeSpeakerManager(storage),
+        xiaomi_account=resolved_xiaomi_account,
+        speaker_manager=resolved_speaker_manager,
         scheduler=scheduler,
         frame_source_factory=source_factory,
         snapshotter=snapshotter or FakeSnapshotter(),
@@ -266,6 +319,160 @@ def test_start_discovers_once_and_new_cameras_stay_idle(tmp_path: Path) -> None:
         assert scheduler.loaded is False
         assert snapshot.overall == "ready"
         assert all("secret" not in repr(option) for option in snapshot.speakers)
+        await runtime.stop()
+
+    asyncio.run(scenario())
+
+
+def test_no_account_startup_creates_unbound_camera_and_rejects_rule_enable(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        account = FakeXiaomiAccountManager(())
+        manager = FakeSpeakerManager(Storage(tmp_path / "app.db"), set())
+        runtime, _discovery, sources, scheduler, _source_calls = make_runtime(
+            tmp_path,
+            discoveries=[("front",)],
+            speaker_manager=manager,
+            xiaomi_account=account,
+            speaker_bindings=(),
+            prebind_cameras=False,
+        )
+
+        await runtime.start()
+        front = runtime.snapshot().cameras[0]
+
+        assert account.starts == 1
+        assert front.speaker_id is None
+        assert front.speaker == "未绑定"
+        assert front.speaker_available is False
+        assert runtime.snapshot().speakers == ()
+
+        try:
+            await runtime.set_rule_enabled("front", True)
+        except ValueError as error:
+            assert str(error) == "speaker_unavailable"
+        else:
+            raise AssertionError("rule was enabled without an available speaker")
+
+        assert Storage(tmp_path / "app.db").camera_rule_enabled(
+            "front", WELCOME_RULE_ID
+        ) is False
+        assert sources == {}
+        assert scheduler.loaded is False
+        await runtime.stop()
+        assert account.stops == 1
+
+    asyncio.run(scenario())
+
+
+def test_enabled_rule_pauses_when_speaker_disappears_and_recovers(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        manager = FakeSpeakerManager(
+            Storage(tmp_path / "app.db"),
+            {"living_room", "bedroom"},
+        )
+        runtime, _discovery, sources, scheduler, _source_calls = make_runtime(
+            tmp_path,
+            discoveries=[("front",)],
+            speaker_manager=manager,
+        )
+        await runtime.start()
+        await runtime.set_rule_enabled("front", True)
+        first_source = sources["front"]
+
+        manager.available_ids.remove("living_room")
+        await runtime.refresh_speaker_state()
+        paused = runtime.snapshot().cameras[0]
+
+        assert paused.rule_enabled is True
+        assert paused.speaker_available is False
+        assert paused.last_error == "speaker_unavailable"
+        assert first_source.stopped is True
+        assert scheduler.loaded is False
+
+        manager.available_ids.add("living_room")
+        await runtime.refresh_speaker_state()
+        recovered = runtime.snapshot().cameras[0]
+
+        assert recovered.rule_enabled is True
+        assert recovered.speaker_available is True
+        assert recovered.last_error == ""
+        assert sources["front"] is not first_source
+        assert sources["front"].started is True
+        assert scheduler.loaded is True
+        await runtime.stop()
+
+    asyncio.run(scenario())
+
+
+def test_rebinding_enabled_camera_to_unavailable_bound_speaker_pauses_it(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        bindings = (
+            FakeBinding("living_room", "客厅音箱"),
+            FakeBinding("bedroom", "卧室音箱", available=False),
+        )
+        manager = FakeSpeakerManager(
+            Storage(tmp_path / "app.db"),
+            {"living_room"},
+        )
+        runtime, _discovery, sources, scheduler, _source_calls = make_runtime(
+            tmp_path,
+            discoveries=[("front",)],
+            speaker_manager=manager,
+            speaker_bindings=bindings,
+        )
+        await runtime.start()
+        await runtime.set_rule_enabled("front", True)
+        first_source = sources["front"]
+
+        await runtime.set_camera_speaker("front", "bedroom")
+        paused = runtime.snapshot().cameras[0]
+
+        assert paused.speaker_id == "bedroom"
+        assert paused.speaker_available is False
+        assert paused.rule_enabled is True
+        assert paused.last_error == "speaker_unavailable"
+        assert first_source.stopped is True
+        assert scheduler.loaded is False
+
+        await runtime.set_camera_speaker("front", "living_room")
+        recovered = runtime.snapshot().cameras[0]
+
+        assert recovered.speaker_available is True
+        assert sources["front"] is not first_source
+        assert sources["front"].started is True
+        await runtime.stop()
+
+    asyncio.run(scenario())
+
+
+def test_unresolved_legacy_speaker_is_hidden_and_requires_rebinding(
+    tmp_path: Path,
+) -> None:
+    storage = Storage(tmp_path / "app.db")
+    storage.initialize()
+    storage.sync_cameras(["front"], "legacy-secret-device-id")
+
+    async def scenario() -> None:
+        runtime, _discovery, _sources, _scheduler, _source_calls = make_runtime(
+            tmp_path,
+            discoveries=[("front",)],
+        )
+        await runtime.start()
+        front = runtime.snapshot().cameras[0]
+
+        assert front.speaker_id is None
+        assert front.speaker == "需要重新绑定"
+        assert front.speaker_available is False
+        assert "legacy-secret-device-id" not in repr(front)
+        assert Storage(tmp_path / "app.db").camera_speaker_id("front") == (
+            "legacy-secret-device-id"
+        )
         await runtime.stop()
 
     asyncio.run(scenario())

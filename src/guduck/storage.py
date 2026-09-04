@@ -644,7 +644,8 @@ class Storage:
                   AND (? IS NULL OR camera_id = ?)
                   AND kind IN ('speaker_completed', 'speaker_queue_full',
                                'speaker_reauth_required', 'speaker_skipped_disabled',
-                               'speaker_skipped_pairing_changed', 'speaker_unknown')
+                               'speaker_skipped_pairing_changed', 'speaker_unknown',
+                               'speaker_unavailable', 'speaker_reconfigured')
                 ORDER BY id DESC
                 LIMIT 1
                 """,
