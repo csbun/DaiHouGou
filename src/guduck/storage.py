@@ -845,6 +845,9 @@ class Storage:
                     f"""
                     UPDATE speaker_bindings SET available = 0, updated_at = ?
                     WHERE binding_id IN ({placeholders})
+                      AND binding_id IN (
+                          SELECT speaker_id FROM cameras WHERE speaker_id IS NOT NULL
+                      )
                     """,
                     (now, *sorted(removed)),
                 )

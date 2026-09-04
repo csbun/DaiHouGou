@@ -613,3 +613,23 @@ def test_binding_confirmation_expires_and_unknown_binding_is_rejected(tmp_path: 
     assert storage.camera_speaker_id("front") == binding.binding_id
     with pytest.raises(ValueError, match="unknown speaker binding"):
         storage.save_speaker_bindings(["missing"])
+
+
+def test_unbinding_unreferenced_discovered_speaker_keeps_discovery_availability(
+    tmp_path: Path,
+) -> None:
+    storage = Storage(tmp_path / "app.db")
+    storage.initialize()
+    binding = storage.upsert_discovered_speakers(
+        [DiscoveredSpeaker("device-a", "客厅", "L05C", None)]
+    )[0]
+    storage.save_speaker_bindings([binding.binding_id])
+
+    result = storage.save_speaker_bindings([])
+
+    assert result.saved is True
+    assert result.confirmation_id is None
+    assert result.affected_camera_ids == ()
+    saved = storage.list_speaker_bindings()[0]
+    assert saved.bound is False
+    assert saved.available is True
