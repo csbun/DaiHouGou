@@ -1196,6 +1196,44 @@ def test_xiaomi_binding_save_returns_one_time_unbind_confirmation() -> None:
     assert response.headers["cache-control"] == "no-store"
 
 
+def test_xiaomi_binding_save_ignores_names_for_unselected_visible_devices() -> None:
+    class StrictBindingRuntime(FakeRuntime):
+        async def save_xiaomi_bindings(
+            self,
+            selected_ids: list[str],
+            confirmation_id: str | None,
+            display_names: dict[str, str],
+        ) -> BindingSaveResult:
+            if not display_names.keys() <= set(selected_ids):
+                raise ValueError("speaker display name is invalid")
+            return await super().save_xiaomi_bindings(
+                selected_ids,
+                confirmation_id,
+                display_names,
+            )
+
+    runtime = StrictBindingRuntime(xiaomi_state="ready")
+    with TestClient(create_app(runtime, csrf_token="fixed-token")) as client:
+        client.get("/settings")
+        response = client.post(
+            "/api/xiaomi/bindings/save",
+            data={
+                "csrf_token": "fixed-token",
+                "display_names": (
+                    '{"binding-selected":"房间小爱音箱",'
+                    '"binding-unselected":"客厅音箱"}'
+                ),
+                "selected_ids": "binding-selected",
+            },
+            headers={"Origin": "http://testserver"},
+        )
+
+    assert response.status_code == 200
+    assert runtime.xiaomi_binding_saves == [
+        (("binding-selected",), None, {"binding-selected": "房间小爱音箱"})
+    ]
+
+
 @pytest.mark.parametrize(
     ("success", "message"),
     [(True, "测试成功"), (False, "测试失败")],

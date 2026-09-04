@@ -426,8 +426,11 @@ def create_app(
             for binding_id, name in raw_names.items()
         ):
             return _no_store_json({"detail": "invalid_binding_request"}, status_code=400)
+        selected_set = frozenset(selected_ids)
         display_names = {
-            binding_id: name.strip() for binding_id, name in raw_names.items()
+            binding_id: name.strip()
+            for binding_id, name in raw_names.items()
+            if binding_id in selected_set
         }
         try:
             result = await runtime.save_xiaomi_bindings(
