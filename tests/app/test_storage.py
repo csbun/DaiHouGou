@@ -633,3 +633,58 @@ def test_unbinding_unreferenced_discovered_speaker_keeps_discovery_availability(
     saved = storage.list_speaker_bindings()[0]
     assert saved.bound is False
     assert saved.available is True
+
+
+def test_account_replacement_and_bindings_commit_atomically_after_confirmation(
+    tmp_path: Path,
+) -> None:
+    storage = Storage(tmp_path / "app.db")
+    storage.initialize()
+    storage.save_xiaomi_account("old-owner", '{"token":"old"}')
+    old = storage.upsert_discovered_speakers(
+        [DiscoveredSpeaker("old-device", "旧音箱", "L05C", None)]
+    )[0]
+    storage.save_speaker_bindings([old.binding_id])
+    storage.sync_cameras(["front"])
+    storage.set_camera_speaker("front", old.binding_id)
+    new_binding_id = "new-safe-binding-id"
+    new_device = DiscoveredSpeaker(
+        "new-private-device",
+        "新音箱",
+        "LX04",
+        None,
+        new_binding_id,
+    )
+
+    preview = storage.replace_xiaomi_configuration(
+        "new-owner",
+        '{"token":"new"}',
+        [new_device],
+        [new_binding_id],
+    )
+
+    assert preview.saved is False
+    unchanged_account = storage.get_xiaomi_account()
+    assert unchanged_account is not None
+    assert unchanged_account.username == "old-owner"
+    assert [binding.binding_id for binding in storage.list_speaker_bindings()] == [
+        old.binding_id
+    ]
+    assert storage.camera_speaker_id("front") == old.binding_id
+
+    result = storage.replace_xiaomi_configuration(
+        "new-owner",
+        '{"token":"new"}',
+        [new_device],
+        [new_binding_id],
+        confirmation_id=preview.confirmation_id,
+    )
+
+    assert result.saved is True
+    account = storage.get_xiaomi_account()
+    assert account is not None
+    assert (account.username, account.token_json) == ("new-owner", '{"token":"new"}')
+    bindings = {binding.binding_id: binding for binding in storage.list_speaker_bindings()}
+    assert bindings[old.binding_id].bound is False
+    assert bindings[new_binding_id].bound is True
+    assert storage.camera_speaker_id("front") is None
