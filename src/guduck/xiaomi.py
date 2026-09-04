@@ -279,6 +279,11 @@ class XiaomiAccountManager:
             for binding_id, candidate in candidates.items()
             if binding_id in selected
         ]
+        selected_test_statuses = {
+            binding_id: candidate.test_status
+            for binding_id, candidate in candidates.items()
+            if binding_id in selected and candidate.test_status != "unknown"
+        }
         if attempt is not None and attempt.state == "devices_ready":
             token = attempt.token_store.token
             if token is None:
@@ -288,17 +293,12 @@ class XiaomiAccountManager:
                 self._serialize_token(token),
                 selected_candidates,
                 selected,
-                names,
-                confirmation_id,
+                display_names=names,
+                test_statuses=selected_test_statuses,
+                confirmation_id=confirmation_id,
             )
             if not result.saved:
                 return result
-            for binding_id, candidate in candidates.items():
-                if binding_id in selected and candidate.test_status != "unknown":
-                    self._storage.set_speaker_test_status(
-                        binding_id,
-                        candidate.test_status,
-                    )
             old_account = self._active_account
             self._active_account = attempt.account
             self._active_mina = attempt.mina
@@ -319,8 +319,9 @@ class XiaomiAccountManager:
                 account.token_json,
                 selected_candidates,
                 selected,
-                names,
-                confirmation_id,
+                display_names=names,
+                test_statuses=selected_test_statuses,
+                confirmation_id=confirmation_id,
             )
             if not result.saved:
                 return result

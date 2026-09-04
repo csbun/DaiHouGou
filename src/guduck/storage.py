@@ -912,6 +912,7 @@ class Storage:
         devices: Sequence[DiscoveredSpeaker],
         selected_binding_ids: Sequence[str],
         display_names: Mapping[str, str] | None = None,
+        test_statuses: Mapping[str, str] | None = None,
         confirmation_id: str | None = None,
     ) -> BindingSaveResult:
         username = username.strip()
@@ -938,6 +939,11 @@ class Storage:
         names = {binding_id: name.strip() for binding_id, name in (display_names or {}).items()}
         if not names.keys() <= selected or any(not 1 <= len(name) <= 50 for name in names.values()):
             raise ValueError("speaker display name is invalid")
+        statuses = dict(test_statuses or {})
+        if not statuses.keys() <= selected or any(
+            status not in {"unknown", "success", "failure"} for status in statuses.values()
+        ):
+            raise ValueError("speaker test status is invalid")
 
         with self._connect() as connection:
             rows = connection.execute("SELECT * FROM speaker_bindings").fetchall()
@@ -987,7 +993,7 @@ class Storage:
                         INSERT INTO speaker_bindings(
                             binding_id, device_id, display_name, mina_name, hardware,
                             miot_did, last_seen_at, bound, available, test_status, updated_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, 1, 'unknown', ?)
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, 1, ?, ?)
                         ON CONFLICT(device_id) DO UPDATE SET
                             mina_name = excluded.mina_name,
                             hardware = excluded.hardware,
@@ -1004,6 +1010,7 @@ class Storage:
                             device.hardware,
                             device.miot_did,
                             now,
+                            statuses.get(binding_id, "unknown"),
                             now,
                         ),
                     )
@@ -1014,6 +1021,14 @@ class Storage:
                         WHERE binding_id = ?
                         """,
                         (display_name, now, binding_id),
+                    )
+                for binding_id, test_status in statuses.items():
+                    connection.execute(
+                        """
+                        UPDATE speaker_bindings SET test_status = ?, updated_at = ?
+                        WHERE binding_id = ?
+                        """,
+                        (test_status, now, binding_id),
                     )
                 connection.execute(
                     "UPDATE speaker_bindings SET bound = 0, updated_at = ?",
