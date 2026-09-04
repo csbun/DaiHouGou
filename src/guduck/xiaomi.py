@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import secrets
+import threading
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -11,6 +12,7 @@ from uuid import uuid4
 
 from miservice import MiAccount, MiNAService
 
+from guduck.speaker import MiNASpeaker, Speaker, is_auth_error
 from guduck.storage import (
     BindingSaveResult,
     DatabaseTokenStore,
@@ -32,6 +34,18 @@ class MiNAServiceLike(Protocol):
     async def device_list(self) -> Sequence[Mapping[str, Any]] | None: ...
 
     async def text_to_speech(self, device_id: str, text: str) -> bool: ...
+
+
+class SpeakerRuntime(Protocol):
+    async def replace_speakers(
+        self,
+        speakers: Mapping[str, Speaker],
+        available_ids: Sequence[str],
+    ) -> None: ...
+
+    def set_available_ids(self, available_ids: Sequence[str]) -> None: ...
+
+    def set_auth_status(self, status: str) -> None: ...
 
 
 AccountFactory = Callable[..., AccountLike]
@@ -115,6 +129,7 @@ class XiaomiAccountManager:
         clock: Callable[[], float] = time.monotonic,
         attempt_seconds: float = AUTH_ATTEMPT_SECONDS,
         on_change: ChangeCallback | None = None,
+        speaker_runtime: SpeakerRuntime | None = None,
     ) -> None:
         self._storage = storage
         self._account_factory = account_factory
@@ -122,6 +137,7 @@ class XiaomiAccountManager:
         self._clock = clock
         self._attempt_seconds = attempt_seconds
         self._on_change = on_change
+        self._speaker_runtime = speaker_runtime
         self._attempt: _AuthAttempt | None = None
         self._active_account: AccountLike | None = None
         self._active_mina: MiNAServiceLike | None = None
@@ -129,12 +145,14 @@ class XiaomiAccountManager:
         self._state = "unconfigured"
         self._error_code: str | None = None
         self._lock = asyncio.Lock()
+        self._playback_auth_required = threading.Event()
 
     async def start(self) -> None:
         account = self._storage.get_xiaomi_account()
         bindings = tuple(binding for binding in self._storage.list_speaker_bindings() if binding.bound)
         if account is None:
             self._state = "unconfigured"
+            await self._publish_runtime(replace=True)
             return
         token_store = DatabaseTokenStore(self._storage, account.username)
         self._active_account = self._account_factory(
@@ -146,6 +164,7 @@ class XiaomiAccountManager:
         )
         self._active_mina = self._mina_factory(self._active_account)
         self._state = "ready" if bindings else "devices_ready"
+        await self._publish_runtime(replace=True)
 
     async def stop(self) -> None:
         async with self._lock:
@@ -236,7 +255,8 @@ class XiaomiAccountManager:
             if self._is_auth_error(error):
                 self._state = "auth_required"
                 self._error_code = "auth_required"
-                await self._notify_change()
+                self._playback_auth_required.set()
+                await self._publish_runtime(replace=False)
                 raise XiaomiStateError("auth_required") from None
             self._active_snapshot = previous
             self._error_code = "device_refresh_failed"
@@ -244,7 +264,7 @@ class XiaomiAccountManager:
         self._storage.refresh_known_speakers(devices)
         self._active_snapshot = self._merge_candidates(devices)
         self._error_code = None
-        await self._notify_change()
+        await self._publish_runtime(replace=False)
         return self.status()
 
     async def save_bindings(
@@ -253,6 +273,7 @@ class XiaomiAccountManager:
         confirmation_id: str | None = None,
         display_names: Mapping[str, str] | None = None,
     ) -> BindingSaveResult:
+        old_account_to_close: AccountLike | None = None
         attempt = self._attempt
         candidates = attempt.candidates if attempt and attempt.state == "devices_ready" else self._active_snapshot
         public_ids = frozenset(candidates)
@@ -299,7 +320,7 @@ class XiaomiAccountManager:
             )
             if not result.saved:
                 return result
-            old_account = self._active_account
+            old_account_to_close = self._active_account
             self._active_account = attempt.account
             self._active_mina = attempt.mina
             self._active_snapshot = dict(attempt.candidates)
@@ -309,7 +330,6 @@ class XiaomiAccountManager:
                 if self._attempt is attempt:
                     self._attempt = None
             await self._finish_attempt(attempt, "ready" if selected else "devices_ready")
-            await self._close_account(old_account)
         else:
             account = self._storage.get_xiaomi_account()
             if account is None:
@@ -327,7 +347,10 @@ class XiaomiAccountManager:
                 return result
         self._state = "ready" if selected else "devices_ready"
         self._error_code = None
-        await self._notify_change()
+        try:
+            await self._publish_runtime(replace=True)
+        finally:
+            await self._close_account(old_account_to_close)
         return result
 
     async def test_binding(self, binding_id: str) -> TestResult:
@@ -372,7 +395,11 @@ class XiaomiAccountManager:
                 binding_id,
                 "success" if success else "failure",
             )
-        await self._notify_change()
+        if attempt is None and self._state == "auth_required":
+            self._playback_auth_required.set()
+            await self._publish_runtime(replace=False)
+        else:
+            await self._notify_change()
         return TestResult(success)
 
     def has_available_binding(self, binding_id: str | None) -> bool:
@@ -391,10 +418,29 @@ class XiaomiAccountManager:
     def runtime_bindings(self) -> tuple[SpeakerBinding, ...]:
         return tuple(binding for binding in self._storage.list_speaker_bindings() if binding.bound)
 
+    def runtime_speakers(
+        self,
+        loop: asyncio.AbstractEventLoop | None = None,
+    ) -> Mapping[str, Speaker]:
+        if self._active_mina is None:
+            return {}
+        resolved_loop = loop or asyncio.get_running_loop()
+        return {
+            binding.binding_id: MiNASpeaker(
+                binding.device_id,
+                lambda service=self._active_mina: service,
+                resolved_loop,
+                is_authorized=lambda: not self._playback_auth_required.is_set(),
+                on_auth_required=self._playback_auth_required.set,
+            )
+            for binding in self.runtime_bindings()
+        }
+
     async def mark_auth_required(self) -> None:
         self._state = "auth_required"
         self._error_code = "auth_required"
-        await self._notify_change()
+        self._playback_auth_required.set()
+        await self._publish_runtime(replace=False)
 
     async def _authenticate(self, attempt: _AuthAttempt) -> None:
         try:
@@ -422,18 +468,16 @@ class XiaomiAccountManager:
             raise
         except XiaomiStateError as error:
             attempt.password = ""
-            attempt.state = "failed"
             attempt.error_code = error.code
+            await self._finish_attempt(attempt, "failed")
         except Exception as error:  # noqa: BLE001 - external library boundary
             attempt.password = ""
-            attempt.state = "failed"
             attempt.error_code = (
                 "auth_required" if self._is_auth_error(error) else "auth_failed"
             )
+            await self._finish_attempt(attempt, "failed")
         finally:
             attempt.password = ""
-            if attempt.state == "failed":
-                await self._finish_attempt(attempt, "failed")
 
     async def _request_otp(self, attempt: _AuthAttempt, method: str) -> str:
         if self._attempt is not attempt:
@@ -456,7 +500,6 @@ class XiaomiAccountManager:
         await self._finish_attempt(attempt, "expired")
 
     async def _finish_attempt(self, attempt: _AuthAttempt, state: str) -> None:
-        attempt.state = state
         attempt.password = ""
         if attempt.otp_future is not None and not attempt.otp_future.done():
             attempt.otp_future.cancel()
@@ -476,6 +519,7 @@ class XiaomiAccountManager:
         attempt.mina = None
         attempt.token_store.token = None
         attempt.candidates.clear()
+        attempt.state = state
 
     def _require_attempt(
         self,
@@ -595,18 +639,7 @@ class XiaomiAccountManager:
 
     @staticmethod
     def _is_auth_error(error: Exception) -> bool:
-        text = str(error).lower()
-        return any(
-            marker in text
-            for marker in (
-                "auth failed",
-                "login failed",
-                "unauthorized",
-                "verification code",
-                "error 401",
-                "70016",
-            )
-        )
+        return is_auth_error(error)
 
     async def _notify_change(self) -> None:
         if self._on_change is None:
@@ -614,6 +647,31 @@ class XiaomiAccountManager:
         result = self._on_change()
         if inspect.isawaitable(result):
             await result
+
+    async def _publish_runtime(self, *, replace: bool) -> None:
+        runtime = self._speaker_runtime
+        ready = self._state == "ready"
+        if ready:
+            self._playback_auth_required.clear()
+        elif self._state == "auth_required":
+            self._playback_auth_required.set()
+        if runtime is not None:
+            available_ids = tuple(
+                binding.binding_id
+                for binding in self.runtime_bindings()
+                if ready and binding.available
+            )
+            if replace:
+                await runtime.replace_speakers(
+                    self.runtime_speakers(),
+                    available_ids,
+                )
+            else:
+                runtime.set_available_ids(available_ids)
+            runtime.set_auth_status(
+                "reauth_required" if self._state == "auth_required" else self._state
+            )
+        await self._notify_change()
 
     async def _reject_runtime_otp(self, method: str) -> str:
         del method

@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from guduck.storage import Storage
+from guduck.storage import DiscoveredSpeaker, Storage
 from guduck.xiaomi import TEST_PHRASE, XiaomiAccountManager, XiaomiStateError
 
 
@@ -94,6 +94,25 @@ class FakeAccountFactory:
         )
         self.accounts.append(account)
         return account
+
+
+class FakeSpeakerRuntime:
+    def __init__(self) -> None:
+        self.replacements: list[tuple[tuple[str, ...], tuple[str, ...]]] = []
+        self.available_updates: list[tuple[str, ...]] = []
+        self.auth_updates: list[str] = []
+        self.account_that_must_be_open: FakeAccount | None = None
+
+    async def replace_speakers(self, speakers, available_ids) -> None:
+        if self.account_that_must_be_open is not None:
+            assert self.account_that_must_be_open.closed is False
+        self.replacements.append((tuple(speakers), tuple(available_ids)))
+
+    def set_available_ids(self, available_ids) -> None:
+        self.available_updates.append(tuple(available_ids))
+
+    def set_auth_status(self, status: str) -> None:
+        self.auth_updates.append(status)
 
 
 async def wait_for_state(
@@ -332,10 +351,12 @@ def test_reauthorization_keeps_old_account_running_until_confirmed_atomic_commit
         old_mina = FakeMiNA([[device("old-device", "旧音箱", "old-miot")]])
         new_mina = FakeMiNA([[device("new-device", "新音箱", "new-miot")]])
         accounts = FakeAccountFactory([old_mina, new_mina])
+        speaker_runtime = FakeSpeakerRuntime()
         manager = XiaomiAccountManager(
             storage,
             account_factory=accounts,
             mina_factory=lambda account: account.mina,
+            speaker_runtime=speaker_runtime,
         )
         first_attempt = await manager.start_auth("old-owner", "old-password")
         await wait_for_state(manager, first_attempt, "devices_ready")
@@ -358,6 +379,7 @@ def test_reauthorization_keeps_old_account_running_until_confirmed_atomic_commit
         assert accounts.accounts[1].closed is False
         assert storage.camera_speaker_id("front") == old_binding_id
 
+        speaker_runtime.account_that_must_be_open = accounts.accounts[0]
         saved = await manager.save_bindings(
             [new_binding_id],
             confirmation_id=preview.confirmation_id,
@@ -474,5 +496,88 @@ def test_manual_test_auth_failure_marks_attempt_auth_required(tmp_path: Path) ->
         assert status.state == "auth_required"
         assert status.error_code == "auth_required"
         assert "service token" not in repr(status)
+
+    asyncio.run(scenario())
+
+
+def test_account_manager_replaces_workers_and_publishes_availability(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        storage = Storage(tmp_path / "app.db")
+        storage.initialize()
+        mina = FakeMiNA([[device()], []])
+        accounts = FakeAccountFactory([mina])
+        speaker_runtime = FakeSpeakerRuntime()
+        manager = XiaomiAccountManager(
+            storage,
+            account_factory=accounts,
+            mina_factory=lambda account: account.mina,
+            speaker_runtime=speaker_runtime,
+        )
+
+        await manager.start()
+        assert speaker_runtime.replacements == [((), ())]
+        assert speaker_runtime.auth_updates == ["unconfigured"]
+
+        attempt_id = await manager.start_auth("owner", "password")
+        await wait_for_state(manager, attempt_id, "devices_ready")
+        binding_id = manager.status(attempt_id).devices[0].id
+        await manager.save_bindings([binding_id])
+
+        assert speaker_runtime.replacements[-1] == ((binding_id,), (binding_id,))
+        assert speaker_runtime.auth_updates[-1] == "ready"
+
+        await manager.refresh_devices()
+
+        assert speaker_runtime.available_updates[-1] == ()
+        assert speaker_runtime.auth_updates[-1] == "ready"
+
+        await manager.mark_auth_required()
+
+        assert speaker_runtime.available_updates[-1] == ()
+        assert speaker_runtime.auth_updates[-1] == "reauth_required"
+        await manager.stop()
+
+    asyncio.run(scenario())
+
+
+def test_restart_builds_workers_from_database_without_device_discovery(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        storage = Storage(tmp_path / "app.db")
+        storage.initialize()
+        storage.save_xiaomi_account(
+            "owner",
+            '{"userId":"private","micoapi":["security","token"]}',
+        )
+        device_record = DiscoveredSpeaker(
+            "raw-device",
+            "客厅",
+            "L05C",
+            None,
+            binding_id="binding-id",
+        )
+        storage.upsert_discovered_speakers([device_record])
+        saved = storage.save_speaker_bindings(["binding-id"])
+        assert saved.saved is True
+        binding_id = storage.list_speaker_bindings()[0].binding_id
+        mina = FakeMiNA([[device()]])
+        accounts = FakeAccountFactory([mina])
+        speaker_runtime = FakeSpeakerRuntime()
+        manager = XiaomiAccountManager(
+            storage,
+            account_factory=accounts,
+            mina_factory=lambda account: account.mina,
+            speaker_runtime=speaker_runtime,
+        )
+
+        await manager.start()
+
+        assert mina.device_list_calls == 0
+        assert speaker_runtime.replacements == [((binding_id,), (binding_id,))]
+        assert speaker_runtime.auth_updates == ["ready"]
+        await manager.stop()
 
     asyncio.run(scenario())

@@ -12,7 +12,6 @@ from guduck.detection_scheduler import DetectionScheduler
 from guduck.go2rtc import Go2RtcClient
 from guduck.runtime import Runtime
 from guduck.settings import ObjectDetectorAdapter, Settings
-from guduck.speaker import DirectSpeaker
 from guduck.speaker_worker import SpeakerManager
 from guduck.storage import Storage
 from guduck.vision.frame_source import FfmpegFrameSource
@@ -25,17 +24,7 @@ from guduck.web import create_app
 def create_production_app(settings: Settings | None = None) -> FastAPI:
     resolved = settings or Settings.from_mapping(os.environ)
     storage = Storage(application_database_path(resolved.data_dir))
-    speaker_manager = SpeakerManager(
-        {
-            speaker.id: DirectSpeaker(
-                resolved.mi_user,
-                resolved.mi_pass,
-                speaker.did,
-            )
-            for speaker in resolved.speakers
-        },
-        storage,
-    )
+    speaker_manager = SpeakerManager({}, storage)
 
     def object_detector_for(
         adapter: ObjectDetectorAdapter,

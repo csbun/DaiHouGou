@@ -1,9 +1,10 @@
 import asyncio
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 from guduck.rules import OBJECT_RULE_ID, WELCOME_RULE_ID, SpeechAction
-from guduck.speaker import SpeakResult
+from guduck.speaker import MiNASpeaker, SpeakResult
 from guduck.speaker_worker import SpeakerManager
 from guduck.storage import EventRecord
 
@@ -155,6 +156,203 @@ def test_reauthentication_on_one_speaker_gates_all_queues() -> None:
         assert manager.submit(action("back", "bedroom", "不得播放")) is False
         assert storage.events[-1].kind == "speaker_reauth_required"
         await manager.stop()
+
+    asyncio.run(scenario())
+
+
+def test_manager_can_start_empty_and_install_speakers_later() -> None:
+    async def scenario() -> None:
+        storage = FakeStorage()
+        manager = SpeakerManager({}, storage)
+        await manager.start()
+
+        assert manager.available("living_room") is False
+        assert manager.submit(action("front", "living_room", "尚未绑定")) is False
+        assert storage.events[-1].kind == "speaker_unknown"
+
+        living = FakeSpeaker()
+        await manager.replace_speakers({"living_room": living}, {"living_room"})
+        assert manager.available("living_room") is True
+        assert manager.submit(action("front", "living_room", "已经绑定")) is True
+        await manager.join()
+        await manager.stop()
+
+        assert living.spoken == ["已经绑定"]
+
+    asyncio.run(scenario())
+
+
+def test_dynamic_replacement_stops_removed_worker_and_starts_added_worker() -> None:
+    async def scenario() -> None:
+        storage = FakeStorage()
+        living = FakeSpeaker()
+        bedroom = FakeSpeaker()
+        manager = SpeakerManager({"living_room": living}, storage)
+        await manager.start()
+
+        await manager.replace_speakers({"bedroom": bedroom}, {"bedroom"})
+
+        assert manager.available("living_room") is False
+        assert manager.available("bedroom") is True
+        assert manager.submit(action("front", "living_room", "旧音箱")) is False
+        assert storage.events[-1].kind == "speaker_unknown"
+        assert manager.submit(action("back", "bedroom", "新音箱")) is True
+        await manager.join()
+        await manager.stop()
+
+        assert living.spoken == []
+        assert bedroom.spoken == ["新音箱"]
+
+    asyncio.run(scenario())
+
+
+def test_known_but_unavailable_speaker_rejects_new_work() -> None:
+    storage = FakeStorage()
+    manager = SpeakerManager({"living_room": FakeSpeaker()}, storage)
+
+    manager.set_available_ids(set())
+
+    assert manager.available("living_room") is False
+    assert manager.submit(action("front", "living_room", "离线")) is False
+    assert storage.events[-1].kind == "speaker_unavailable"
+
+
+def test_auth_failure_drops_pending_work_without_retrying_in_flight_call() -> None:
+    class AuthFailingSpeaker:
+        def __init__(self) -> None:
+            self.entered = threading.Event()
+            self.release = threading.Event()
+            self.spoken: list[str] = []
+
+        def speak(self, text: str) -> SpeakResult:
+            self.spoken.append(text)
+            self.entered.set()
+            assert self.release.wait(2)
+            return SpeakResult(False, 1, "reauth_required", "reauth_required")
+
+    async def scenario() -> None:
+        storage = FakeStorage()
+        speaker = AuthFailingSpeaker()
+        auth_notifications = 0
+
+        def on_auth_required() -> None:
+            nonlocal auth_notifications
+            auth_notifications += 1
+
+        manager = SpeakerManager(
+            {"living_room": speaker},
+            storage,
+            on_auth_required=on_auth_required,
+        )
+        await manager.start()
+        assert manager.submit(action("front", "living_room", "认证失效"))
+        assert await asyncio.to_thread(speaker.entered.wait, 2)
+        assert manager.submit(action("front", "living_room", "不得重试"))
+        speaker.release.set()
+        await manager.join()
+
+        assert speaker.spoken == ["认证失效"]
+        assert auth_notifications == 1
+        assert manager.auth_status == "reauth_required"
+        assert [event.kind for event in storage.events] == [
+            "speaker_reauth_required",
+            "speaker_reauth_required",
+        ]
+        await manager.stop()
+
+    asyncio.run(scenario())
+
+
+def test_cross_speaker_executor_backlog_is_gated_after_auth_failure() -> None:
+    class MiNA:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str]] = []
+
+        async def text_to_speech(self, device_id: str, text: str) -> bool:
+            self.calls.append((device_id, text))
+            if device_id == "living-device":
+                raise RuntimeError("Error 401 private token")
+            return True
+
+    async def scenario() -> None:
+        loop = asyncio.get_running_loop()
+        loop.set_default_executor(ThreadPoolExecutor(max_workers=1))
+        storage = FakeStorage()
+        service = MiNA()
+        auth_required = threading.Event()
+        speakers = {
+            "living_room": MiNASpeaker(
+                "living-device",
+                lambda: service,
+                loop,
+                is_authorized=lambda: not auth_required.is_set(),
+                on_auth_required=auth_required.set,
+            ),
+            "bedroom": MiNASpeaker(
+                "bedroom-device",
+                lambda: service,
+                loop,
+                is_authorized=lambda: not auth_required.is_set(),
+                on_auth_required=auth_required.set,
+            ),
+        }
+        manager = SpeakerManager(speakers, storage)
+        await manager.start()
+
+        assert manager.submit(action("front", "living_room", "触发失效"))
+        assert manager.submit(action("back", "bedroom", "不得开始"))
+        await manager.join()
+        await manager.stop()
+
+        assert service.calls == [("living-device", "触发失效")]
+        assert manager.auth_status == "reauth_required"
+        assert [event.kind for event in storage.events] == [
+            "speaker_reauth_required",
+            "speaker_reauth_required",
+        ]
+
+    asyncio.run(scenario())
+
+
+def test_replacement_drains_queued_action_and_waits_for_in_flight_call() -> None:
+    class BlockingSpeaker(FakeSpeaker):
+        def __init__(self) -> None:
+            super().__init__()
+            self.entered = threading.Event()
+            self.release = threading.Event()
+
+        def speak(self, text: str) -> SpeakResult:
+            self.entered.set()
+            assert self.release.wait(2)
+            return super().speak(text)
+
+    async def scenario() -> None:
+        storage = FakeStorage()
+        old = BlockingSpeaker()
+        new = FakeSpeaker()
+        manager = SpeakerManager({"living_room": old}, storage)
+        await manager.start()
+        assert manager.submit(action("front", "living_room", "已经开始"))
+        assert await asyncio.to_thread(old.entered.wait, 2)
+        assert manager.submit(action("front", "living_room", "仍在排队"))
+
+        replacement = asyncio.create_task(
+            manager.replace_speakers({"living_room": new}, {"living_room"})
+        )
+        await asyncio.sleep(0)
+        assert replacement.done() is False
+        old.release.set()
+        await replacement
+
+        assert old.spoken == ["已经开始"]
+        assert [event.kind for event in storage.events] == [
+            "speaker_reconfigured",
+            "speaker_completed",
+        ]
+        assert manager.submit(action("front", "living_room", "新 worker"))
+        await manager.join()
+        await manager.stop()
+        assert new.spoken == ["新 worker"]
 
     asyncio.run(scenario())
 
