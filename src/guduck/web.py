@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import inspect
+import json
 import math
 import secrets
 import time
+from collections.abc import Mapping, Sequence
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Protocol
@@ -20,6 +22,8 @@ from guduck.object_catalog import COCO_CATEGORY_NAMES, OBJECTS365_CATEGORY_NAMES
 from guduck.rules import BUILTIN_RULE_IDS
 from guduck.runtime import CameraView, ObjectDetectorOption, RuntimeSnapshot
 from guduck.settings import ObjectDetectorAdapter
+from guduck.storage import BindingSaveResult, TestResult
+from guduck.xiaomi import PublicSpeaker, XiaomiStateError, XiaomiStatus
 
 PACKAGE_DIR = Path(__file__).parent
 
@@ -49,6 +53,25 @@ class ManagedRuntime(Protocol):
 
     async def set_object_detector_adapter(self, adapter: ObjectDetectorAdapter) -> None: ...
 
+    def xiaomi_status(self, attempt_id: str | None = None) -> XiaomiStatus: ...
+
+    async def start_xiaomi_auth(self, username: str, password: str) -> str: ...
+
+    async def submit_xiaomi_otp(self, attempt_id: str, code: str) -> None: ...
+
+    async def cancel_xiaomi_auth(self, attempt_id: str) -> None: ...
+
+    async def refresh_xiaomi_devices(self) -> XiaomiStatus: ...
+
+    async def save_xiaomi_bindings(
+        self,
+        selected_ids: Sequence[str],
+        confirmation_id: str | None,
+        display_names: Mapping[str, str],
+    ) -> BindingSaveResult: ...
+
+    async def test_xiaomi_binding(self, binding_id: str) -> TestResult: ...
+
     def snapshot(self) -> RuntimeSnapshot: ...
 
 
@@ -73,6 +96,58 @@ def _phrase_error(error: ValueError) -> str:
     if "at most 100" in message:
         return "每条欢迎词最多 100 个字符"
     return "欢迎词格式无效"
+
+
+def _public_speaker_payload(speaker: PublicSpeaker) -> dict[str, object]:
+    return {
+        "id": speaker.id,
+        "name": speaker.name,
+        "mina_name": speaker.mina_name,
+        "hardware": speaker.hardware,
+        "checked": speaker.checked,
+        "available": speaker.available,
+        "test_status": speaker.test_status,
+    }
+
+
+def _xiaomi_status_payload(status: XiaomiStatus) -> dict[str, object]:
+    return {
+        "state": status.state,
+        "attempt_id": status.attempt_id,
+        "otp_method": status.otp_method,
+        "expires_at": status.expires_at,
+        "error_code": status.error_code,
+        "devices": [_public_speaker_payload(device) for device in status.devices],
+        "bindings": [_public_speaker_payload(binding) for binding in status.bindings],
+    }
+
+
+def _no_store_json(
+    content: object,
+    *,
+    status_code: int = 200,
+) -> JSONResponse:
+    return JSONResponse(
+        content,
+        status_code=status_code,
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+def _xiaomi_error(error: XiaomiStateError) -> JSONResponse:
+    code = error.code
+    if code in {
+        "unknown_auth_attempt",
+        "otp_not_required",
+        "account_unconfigured",
+        "auth_required",
+    }:
+        status_code = 409
+    elif code in {"device_refresh_failed", "auth_failed"}:
+        status_code = 503
+    else:
+        status_code = 400
+    return _no_store_json({"detail": code}, status_code=status_code)
 
 
 def create_app(
@@ -174,6 +249,7 @@ def create_app(
         object_detector_error: str = "",
         status_code: int = 200,
     ) -> HTMLResponse:
+        xiaomi_status = runtime.xiaomi_status()
         object_detector_options = runtime.object_detector_options()
         selected_adapter = next(
             option.adapter for option in object_detector_options if option.selected
@@ -199,6 +275,7 @@ def create_app(
                 ),
                 "phrase_error": phrase_error,
                 "object_detector_error": object_detector_error,
+                "xiaomi": _xiaomi_status_payload(xiaomi_status),
                 "csrf_token": token,
                 "active_tab": "settings",
                 "object_detector_options": tuple(
@@ -236,6 +313,167 @@ def create_app(
     @app.get("/settings", response_class=HTMLResponse)
     async def settings(request: Request) -> HTMLResponse:
         return render_settings(request)
+
+    @app.post("/api/xiaomi/auth/start")
+    async def start_xiaomi_auth(
+        request: Request,
+        csrf_token: str = Form(default=""),
+        username: str = Form(default=""),
+        password: str = Form(default=""),
+    ) -> JSONResponse:
+        _verify_write_request(request, csrf_token, token)
+        if not 1 <= len(username.strip()) <= 200 or not 1 <= len(password) <= 200:
+            return _no_store_json({"detail": "invalid_credentials"}, status_code=400)
+        try:
+            attempt_id = await runtime.start_xiaomi_auth(username, password)
+            status = runtime.xiaomi_status(attempt_id)
+        except XiaomiStateError as error:
+            return _xiaomi_error(error)
+        return _no_store_json(
+            {**_xiaomi_status_payload(status), "attempt_id": attempt_id},
+            status_code=202,
+        )
+
+    @app.get("/api/xiaomi/auth/status")
+    async def xiaomi_auth_status(attempt_id: str = "") -> JSONResponse:
+        if len(attempt_id) > 128:
+            return _no_store_json({"detail": "invalid_attempt_id"}, status_code=400)
+        try:
+            status = runtime.xiaomi_status(attempt_id or None)
+        except XiaomiStateError as error:
+            return _xiaomi_error(error)
+        return _no_store_json(_xiaomi_status_payload(status))
+
+    @app.post("/api/xiaomi/auth/otp")
+    async def submit_xiaomi_otp(
+        request: Request,
+        csrf_token: str = Form(default=""),
+        attempt_id: str = Form(default=""),
+        code: str = Form(default=""),
+    ) -> JSONResponse:
+        _verify_write_request(request, csrf_token, token)
+        if not 1 <= len(attempt_id) <= 128 or not 4 <= len(code.strip()) <= 12:
+            return _no_store_json({"detail": "invalid_otp"}, status_code=400)
+        try:
+            await runtime.submit_xiaomi_otp(attempt_id, code)
+            status = runtime.xiaomi_status(attempt_id)
+        except XiaomiStateError as error:
+            return _xiaomi_error(error)
+        return _no_store_json(_xiaomi_status_payload(status))
+
+    @app.post("/api/xiaomi/auth/cancel")
+    async def cancel_xiaomi_auth(
+        request: Request,
+        csrf_token: str = Form(default=""),
+        attempt_id: str = Form(default=""),
+    ) -> JSONResponse:
+        _verify_write_request(request, csrf_token, token)
+        if not 1 <= len(attempt_id) <= 128:
+            return _no_store_json({"detail": "invalid_attempt_id"}, status_code=400)
+        try:
+            await runtime.cancel_xiaomi_auth(attempt_id)
+            status = runtime.xiaomi_status(attempt_id)
+        except XiaomiStateError as error:
+            return _xiaomi_error(error)
+        return _no_store_json(_xiaomi_status_payload(status))
+
+    @app.post("/api/xiaomi/devices/refresh")
+    async def refresh_xiaomi_devices(
+        request: Request,
+        csrf_token: str = Form(default=""),
+    ) -> JSONResponse:
+        _verify_write_request(request, csrf_token, token)
+        try:
+            status = await runtime.refresh_xiaomi_devices()
+        except XiaomiStateError as error:
+            return _xiaomi_error(error)
+        return _no_store_json(_xiaomi_status_payload(status))
+
+    @app.post("/api/xiaomi/bindings/save")
+    async def save_xiaomi_bindings(request: Request) -> JSONResponse:
+        form = await request.form()
+        form_token = form.get("csrf_token")
+        _verify_write_request(
+            request,
+            form_token if isinstance(form_token, str) else "",
+            token,
+        )
+        selected_ids = [
+            value
+            for value in form.getlist("selected_ids")
+            if isinstance(value, str)
+        ]
+        confirmation = form.get("confirmation_id")
+        confirmation_id = confirmation if isinstance(confirmation, str) else ""
+        names_value = form.get("display_names")
+        names_json = names_value if isinstance(names_value, str) else "{}"
+        if (
+            len(selected_ids) > 100
+            or any(not 1 <= len(binding_id) <= 128 for binding_id in selected_ids)
+            or len(confirmation_id) > 128
+            or len(names_json) > 20_000
+        ):
+            return _no_store_json({"detail": "invalid_binding_request"}, status_code=400)
+        try:
+            raw_names = json.loads(names_json)
+        except json.JSONDecodeError:
+            return _no_store_json({"detail": "invalid_binding_request"}, status_code=400)
+        if not isinstance(raw_names, dict) or any(
+            not isinstance(binding_id, str)
+            or not isinstance(name, str)
+            or not 1 <= len(binding_id) <= 128
+            or not 1 <= len(name.strip()) <= 50
+            for binding_id, name in raw_names.items()
+        ):
+            return _no_store_json({"detail": "invalid_binding_request"}, status_code=400)
+        display_names = {
+            binding_id: name.strip() for binding_id, name in raw_names.items()
+        }
+        try:
+            result = await runtime.save_xiaomi_bindings(
+                selected_ids,
+                confirmation_id or None,
+                display_names,
+            )
+        except XiaomiStateError as error:
+            return _xiaomi_error(error)
+        except (TypeError, ValueError):
+            return _no_store_json({"detail": "invalid_binding_request"}, status_code=400)
+        if not result.saved:
+            return _no_store_json(
+                {
+                    "detail": "unbind_confirmation_required",
+                    "confirmation_id": result.confirmation_id,
+                    "affected_cameras": list(result.affected_camera_ids),
+                },
+                status_code=409,
+            )
+        return _no_store_json(
+            {
+                "saved": True,
+                "status": _xiaomi_status_payload(runtime.xiaomi_status()),
+            }
+        )
+
+    @app.post("/api/xiaomi/bindings/{binding_id}/test")
+    async def test_xiaomi_binding(
+        request: Request,
+        binding_id: str,
+        csrf_token: str = Form(default=""),
+    ) -> JSONResponse:
+        _verify_write_request(request, csrf_token, token)
+        if not 1 <= len(binding_id) <= 128:
+            return _no_store_json({"detail": "invalid_binding_id"}, status_code=400)
+        try:
+            result = await runtime.test_xiaomi_binding(binding_id)
+        except XiaomiStateError as error:
+            return _xiaomi_error(error)
+        return _no_store_json(
+            {
+                "success": result.success,
+                "message": "测试成功" if result.success else "测试失败",
+            }
+        )
 
     @app.get("/logs", response_class=HTMLResponse)
     async def logs(request: Request) -> HTMLResponse:
@@ -300,6 +538,8 @@ def create_app(
         except ValueError as error:
             if str(error) == "unknown_rule":
                 raise HTTPException(status_code=400, detail="unknown_rule") from error
+            if str(error) == "speaker_unavailable":
+                raise HTTPException(status_code=409, detail="speaker_unavailable") from error
             raise
         if "application/json" in request.headers.get("accept", ""):
             snapshot = runtime.snapshot()

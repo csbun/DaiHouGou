@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
 from typing import Protocol
@@ -22,8 +22,9 @@ from guduck.rules import (
 )
 from guduck.settings import ObjectDetectorAdapter
 from guduck.speaker_worker import SpeakerManager
-from guduck.storage import CameraConfig, Storage, StoredEvent
+from guduck.storage import BindingSaveResult, CameraConfig, Storage, StoredEvent, TestResult
 from guduck.vision.frame_source import OBJECT_FRAME_SIZE, PERSON_FRAME_SIZE
+from guduck.xiaomi import XiaomiStatus
 
 FrameSourceFactory = Callable[[str, int, DetectionRegion], FrameSource]
 ObjectDetectorFactory = Callable[["ObjectDetectorAdapter"], object]
@@ -74,6 +75,25 @@ class ManagedXiaomiAccount(Protocol):
     async def stop(self) -> None: ...
 
     def display_bindings(self) -> Sequence[BoundSpeakerView]: ...
+
+    def status(self, attempt_id: str | None = None) -> XiaomiStatus: ...
+
+    async def start_auth(self, username: str, password: str) -> str: ...
+
+    async def submit_otp(self, attempt_id: str, code: str) -> None: ...
+
+    async def cancel_auth(self, attempt_id: str) -> None: ...
+
+    async def refresh_devices(self) -> XiaomiStatus: ...
+
+    async def save_bindings(
+        self,
+        selected_ids: Sequence[str],
+        confirmation_id: str | None = None,
+        display_names: Mapping[str, str] | None = None,
+    ) -> BindingSaveResult: ...
+
+    async def test_binding(self, binding_id: str) -> TestResult: ...
 
 
 @dataclass(frozen=True)
@@ -384,6 +404,36 @@ class Runtime:
     async def refresh_speaker_state(self) -> None:
         async with self._lock:
             await self._reconcile()
+
+    def xiaomi_status(self, attempt_id: str | None = None) -> XiaomiStatus:
+        return self._xiaomi_account.status(attempt_id)
+
+    async def start_xiaomi_auth(self, username: str, password: str) -> str:
+        return await self._xiaomi_account.start_auth(username, password)
+
+    async def submit_xiaomi_otp(self, attempt_id: str, code: str) -> None:
+        await self._xiaomi_account.submit_otp(attempt_id, code)
+
+    async def cancel_xiaomi_auth(self, attempt_id: str) -> None:
+        await self._xiaomi_account.cancel_auth(attempt_id)
+
+    async def refresh_xiaomi_devices(self) -> XiaomiStatus:
+        return await self._xiaomi_account.refresh_devices()
+
+    async def save_xiaomi_bindings(
+        self,
+        selected_ids: Sequence[str],
+        confirmation_id: str | None = None,
+        display_names: Mapping[str, str] | None = None,
+    ) -> BindingSaveResult:
+        return await self._xiaomi_account.save_bindings(
+            selected_ids,
+            confirmation_id,
+            display_names,
+        )
+
+    async def test_xiaomi_binding(self, binding_id: str) -> TestResult:
+        return await self._xiaomi_account.test_binding(binding_id)
 
     async def set_camera_detection_region(self, camera_id: str, region: DetectionRegion) -> None:
         async with self._lock:

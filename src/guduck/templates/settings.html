@@ -12,6 +12,110 @@
     <main class="settings-main">
       <section aria-labelledby="settings-title">
         <h2 id="settings-title">设置</h2>
+        <div
+          class="settings-section xiaomi-settings"
+          data-xiaomi-settings
+          data-status-url="/api/xiaomi/auth/status"
+          data-csrf-token="{{ csrf_token }}"
+        >
+          <div class="section-header">
+            <div>
+              <h3>小米音箱</h3>
+              <p class="section-meta" data-xiaomi-state role="status" aria-live="polite">
+                {% if xiaomi.state == 'ready' %}已授权
+                {% elif xiaomi.state == 'devices_ready' %}已授权，请选择绑定设备
+                {% elif xiaomi.state == 'auth_required' %}授权已过期，请重新授权
+                {% elif xiaomi.state == 'otp_required' %}请输入验证码
+                {% elif xiaomi.state in ('authenticating', 'fetching_devices') %}正在授权
+                {% elif xiaomi.state == 'expired' %}授权操作已过期
+                {% elif xiaomi.state == 'cancelled' %}授权已取消
+                {% elif xiaomi.state == 'failed' %}授权失败
+                {% else %}尚未配置
+                {% endif %}
+              </p>
+            </div>
+          </div>
+
+          <script type="application/json" data-xiaomi-initial>{{ xiaomi | tojson }}</script>
+
+          <form class="xiaomi-auth-form" action="/api/xiaomi/auth/start" method="post" data-xiaomi-auth-form>
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <div class="xiaomi-auth-fields">
+              <label>
+                <span>小米账号</span>
+                <input name="username" type="text" maxlength="200" autocomplete="username" required>
+              </label>
+              <label>
+                <span>密码</span>
+                <input name="password" type="password" maxlength="200" autocomplete="current-password" required>
+              </label>
+              <button class="button primary" type="submit">授权 / 重新授权</button>
+            </div>
+          </form>
+
+          <form class="xiaomi-otp-form" action="/api/xiaomi/auth/otp" method="post" data-xiaomi-otp-form hidden>
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="attempt_id" value="{{ xiaomi.attempt_id or '' }}" data-xiaomi-attempt-input>
+            <label>
+              <span data-xiaomi-otp-label>验证码</span>
+              <input name="code" type="text" inputmode="numeric" minlength="4" maxlength="12" autocomplete="one-time-code" required>
+            </label>
+            <button class="button primary" type="submit">提交验证码</button>
+          </form>
+
+          <div class="xiaomi-toolbar">
+            <form action="/api/xiaomi/devices/refresh" method="post" data-xiaomi-refresh-form>
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <button class="button secondary" type="submit">刷新设备</button>
+            </form>
+            <form action="/api/xiaomi/auth/cancel" method="post" data-xiaomi-cancel-form hidden>
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <input type="hidden" name="attempt_id" value="{{ xiaomi.attempt_id or '' }}" data-xiaomi-attempt-input>
+              <button class="button secondary" type="submit">取消授权</button>
+            </form>
+            <span class="field-error" data-xiaomi-error role="alert"></span>
+          </div>
+
+          <form class="xiaomi-bindings-form" action="/api/xiaomi/bindings/save" method="post" data-xiaomi-bindings-form>
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="display_names" value="{}" data-xiaomi-display-names>
+            <div class="xiaomi-device-list" data-xiaomi-device-list>
+              {% set initial_speakers = xiaomi.devices if xiaomi.devices else xiaomi.bindings %}
+              {% for speaker in initial_speakers %}
+              <article class="xiaomi-device" data-xiaomi-device data-binding-id="{{ speaker.id }}">
+                <label class="xiaomi-device-check">
+                  <input type="checkbox" name="selected_ids" value="{{ speaker.id }}" {% if speaker.checked %}checked{% endif %}>
+                  <span>{{ speaker.mina_name }}</span>
+                </label>
+                <span class="xiaomi-device-meta">{{ speaker.hardware }} · {{ '可用' if speaker.available else '不可用' }}</span>
+                <label>
+                  <span class="sr-only">自定义名称</span>
+                  <input type="text" maxlength="50" value="{{ speaker.name }}" data-xiaomi-display-name>
+                </label>
+                <button class="button secondary" type="button" data-xiaomi-test data-test-url="/api/xiaomi/bindings/{{ speaker.id }}/test">测试</button>
+                <span data-xiaomi-test-result role="status">
+                  {% if speaker.test_status == 'success' %}测试成功{% elif speaker.test_status == 'failure' %}测试失败{% endif %}
+                </span>
+              </article>
+              {% else %}
+              <p class="empty-state" data-xiaomi-empty>授权后可查看全部音箱</p>
+              {% endfor %}
+            </div>
+            <div class="form-actions">
+              <span class="section-meta">取消勾选即解除绑定；测试结果不影响保存。</span>
+              <button class="button primary" type="submit">保存绑定</button>
+            </div>
+          </form>
+
+          <div class="xiaomi-confirm" data-xiaomi-confirm hidden role="alertdialog" aria-modal="true">
+            <p>以下摄像头绑定的音箱未勾选：<strong data-xiaomi-affected-cameras></strong></p>
+            <p>继续保存后，这些摄像头将标记为音箱不可用。</p>
+            <div class="xiaomi-confirm-actions">
+              <button class="button secondary" type="button" data-xiaomi-confirm-cancel>返回检查</button>
+              <button class="button primary" type="button" data-xiaomi-confirm-save>仍然保存</button>
+            </div>
+          </div>
+        </div>
         <div class="settings-section">
           <h3>欢迎规则</h3>
           <form class="phrase-form" method="post" action="/commands/welcome-phrases">
@@ -72,5 +176,6 @@
       </section>
     </main>
     {% include "_bottom_tabs.html" %}
+    <script src="{{ url_for('static', path='/app.js') }}" defer></script>
   </body>
 </html>

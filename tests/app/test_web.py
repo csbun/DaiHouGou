@@ -14,8 +14,14 @@ from guduck.runtime import (
     SpeakerOption,
 )
 from guduck.settings import ObjectDetectorAdapter
-from guduck.storage import StoredEvent, normalize_welcome_phrases
+from guduck.storage import (
+    BindingSaveResult,
+    StoredEvent,
+    normalize_welcome_phrases,
+)
+from guduck.storage import TestResult as XiaomiTestResult
 from guduck.web import create_app
+from guduck.xiaomi import PublicSpeaker, XiaomiStateError, XiaomiStatus
 
 
 def snapshot_fixture(
@@ -75,6 +81,10 @@ class FakeRuntime:
         object_detector_adapter: ObjectDetectorAdapter = ObjectDetectorAdapter.NANODET,
         unavailable_object_adapters: frozenset[ObjectDetectorAdapter] = frozenset(),
         object_detector_error: RuntimeError | None = None,
+        xiaomi_state: str = "unconfigured",
+        xiaomi_test_success: bool = True,
+        xiaomi_save_result: BindingSaveResult | None = None,
+        rule_error: ValueError | None = None,
     ) -> None:
         self.refresh_calls = 0
         self.rule_updates: list[tuple[str, bool]] = []
@@ -83,12 +93,37 @@ class FakeRuntime:
         self.snapshot_calls: list[str] = []
         self.region_updates: list[tuple[str, DetectionRegion]] = []
         self.object_detector_updates: list[ObjectDetectorAdapter] = []
+        self.xiaomi_auth_starts: list[tuple[str, str]] = []
+        self.xiaomi_status_attempts: list[str | None] = []
+        self.xiaomi_otps: list[tuple[str, str]] = []
+        self.xiaomi_cancellations: list[str] = []
+        self.xiaomi_refreshes = 0
+        self.xiaomi_binding_saves: list[
+            tuple[tuple[str, ...], str | None, dict[str, str]]
+        ] = []
+        self.xiaomi_tests: list[str] = []
         self._object_detector_adapter = object_detector_adapter
         self._unavailable_object_adapters = unavailable_object_adapters
         self._object_detector_error = object_detector_error
         self._snapshot_bytes = snapshot_bytes
         self._snapshot_error = snapshot_error
         self._phrases = ("你好呀，欢迎回来。",)
+        self._xiaomi_test_success = xiaomi_test_success
+        self._xiaomi_save_result = xiaomi_save_result or BindingSaveResult(
+            True,
+            None,
+            (),
+        )
+        self._rule_error = rule_error
+        self._xiaomi_status = XiaomiStatus(
+            state=xiaomi_state,
+            attempt_id=None,
+            otp_method=None,
+            expires_at=None,
+            error_code=None,
+            devices=(),
+            bindings=(),
+        )
         self._snapshot = snapshot_fixture(
             camera_count,
             camera_ids,
@@ -106,6 +141,8 @@ class FakeRuntime:
         self.refresh_calls += 1
 
     async def set_rule_enabled(self, camera_id: str, enabled: bool) -> None:
+        if self._rule_error is not None:
+            raise self._rule_error
         if camera_id not in {camera.stream_id for camera in self._snapshot.cameras}:
             raise KeyError(camera_id)
         self.rule_updates.append((camera_id, enabled))
@@ -178,6 +215,48 @@ class FakeRuntime:
             raise self._object_detector_error
         self.object_detector_updates.append(adapter)
         self._object_detector_adapter = adapter
+
+    def xiaomi_status(self, attempt_id: str | None = None) -> XiaomiStatus:
+        self.xiaomi_status_attempts.append(attempt_id)
+        if attempt_id is not None and attempt_id != self._xiaomi_status.attempt_id:
+            raise XiaomiStateError("unknown_auth_attempt")
+        return self._xiaomi_status
+
+    async def start_xiaomi_auth(self, username: str, password: str) -> str:
+        self.xiaomi_auth_starts.append((username, password))
+        self._xiaomi_status = replace(
+            self._xiaomi_status,
+            state="authenticating",
+            attempt_id="public-attempt-id",
+        )
+        return "public-attempt-id"
+
+    async def submit_xiaomi_otp(self, attempt_id: str, code: str) -> None:
+        self.xiaomi_otps.append((attempt_id, code))
+        self._xiaomi_status = replace(self._xiaomi_status, state="authenticating")
+
+    async def cancel_xiaomi_auth(self, attempt_id: str) -> None:
+        self.xiaomi_cancellations.append(attempt_id)
+        self._xiaomi_status = replace(self._xiaomi_status, state="cancelled")
+
+    async def refresh_xiaomi_devices(self) -> XiaomiStatus:
+        self.xiaomi_refreshes += 1
+        return self._xiaomi_status
+
+    async def save_xiaomi_bindings(
+        self,
+        selected_ids: list[str],
+        confirmation_id: str | None,
+        display_names: dict[str, str],
+    ) -> BindingSaveResult:
+        self.xiaomi_binding_saves.append(
+            (tuple(selected_ids), confirmation_id, display_names)
+        )
+        return self._xiaomi_save_result
+
+    async def test_xiaomi_binding(self, binding_id: str) -> XiaomiTestResult:
+        self.xiaomi_tests.append(binding_id)
+        return XiaomiTestResult(self._xiaomi_test_success)
 
     def snapshot(self) -> RuntimeSnapshot:
         return self._snapshot
@@ -944,3 +1023,226 @@ def test_healthz_contains_counts_and_camera_states_without_private_data() -> Non
     assert "你好呀，欢迎回来。" not in serialized
     assert "secret" not in serialized
     assert "did" not in serialized.lower()
+
+
+def public_speaker(
+    binding_id: str = "binding-a",
+    *,
+    checked: bool = True,
+    available: bool = True,
+    test_status: str = "unknown",
+) -> PublicSpeaker:
+    return PublicSpeaker(
+        id=binding_id,
+        name="门口音箱",
+        mina_name="小爱音箱",
+        hardware="L05C",
+        checked=checked,
+        available=available,
+        test_status=test_status,
+    )
+
+
+def test_settings_renders_xiaomi_account_section_without_sensitive_fields() -> None:
+    runtime = FakeRuntime(xiaomi_state="ready")
+    runtime._xiaomi_status = replace(
+        runtime._xiaomi_status,
+        bindings=(public_speaker(),),
+    )
+
+    with TestClient(create_app(runtime, csrf_token="fixed-token")) as client:
+        response = client.get("/settings")
+
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
+    assert 'data-xiaomi-settings' in response.text
+    assert "小米音箱" in response.text
+    assert "门口音箱" in response.text
+    assert "L05C" in response.text
+    for secret in (
+        "raw-device-id",
+        "raw-miot-did",
+        "private-token",
+        "temporary-password",
+    ):
+        assert secret not in response.text
+
+
+def test_xiaomi_auth_status_otp_and_cancel_are_ajax_and_no_store() -> None:
+    runtime = FakeRuntime()
+    with TestClient(create_app(runtime, csrf_token="fixed-token")) as client:
+        client.get("/settings")
+        headers = {"Origin": "http://testserver"}
+        started = client.post(
+            "/api/xiaomi/auth/start",
+            data={
+                "csrf_token": "fixed-token",
+                "username": "owner@example.test",
+                "password": "temporary-password",
+            },
+            headers=headers,
+        )
+        runtime._xiaomi_status = replace(
+            runtime._xiaomi_status,
+            state="otp_required",
+            otp_method="Phone",
+        )
+        status = client.get(
+            "/api/xiaomi/auth/status",
+            params={"attempt_id": "public-attempt-id"},
+        )
+        otp = client.post(
+            "/api/xiaomi/auth/otp",
+            data={
+                "csrf_token": "fixed-token",
+                "attempt_id": "public-attempt-id",
+                "code": "123456",
+            },
+            headers=headers,
+        )
+        cancelled = client.post(
+            "/api/xiaomi/auth/cancel",
+            data={
+                "csrf_token": "fixed-token",
+                "attempt_id": "public-attempt-id",
+            },
+            headers=headers,
+        )
+
+    assert started.status_code == 202
+    assert started.json()["attempt_id"] == "public-attempt-id"
+    assert status.json()["state"] == "otp_required"
+    assert status.json()["otp_method"] == "Phone"
+    assert otp.status_code == 200
+    assert cancelled.json()["state"] == "cancelled"
+    assert runtime.xiaomi_auth_starts == [
+        ("owner@example.test", "temporary-password")
+    ]
+    assert runtime.xiaomi_otps == [("public-attempt-id", "123456")]
+    assert runtime.xiaomi_cancellations == ["public-attempt-id"]
+    for response in (started, status, otp, cancelled):
+        assert response.headers["cache-control"] == "no-store"
+        assert "temporary-password" not in response.text
+
+
+@pytest.mark.parametrize(
+    ("path", "data"),
+    [
+        ("/api/xiaomi/auth/start", {"username": "owner", "password": "password"}),
+        ("/api/xiaomi/auth/otp", {"attempt_id": "attempt", "code": "123456"}),
+        ("/api/xiaomi/auth/cancel", {"attempt_id": "attempt"}),
+        ("/api/xiaomi/devices/refresh", {}),
+        ("/api/xiaomi/bindings/save", {"selected_ids": "binding-a"}),
+        ("/api/xiaomi/bindings/binding-a/test", {}),
+    ],
+)
+def test_xiaomi_write_routes_require_csrf_and_same_origin(
+    path: str,
+    data: dict[str, str],
+) -> None:
+    runtime = FakeRuntime()
+    with TestClient(create_app(runtime, csrf_token="fixed-token")) as client:
+        client.get("/settings")
+        missing_csrf = client.post(
+            path,
+            data=data,
+            headers={"Origin": "http://testserver"},
+        )
+        cross_origin = client.post(
+            path,
+            data={**data, "csrf_token": "fixed-token"},
+            headers={"Origin": "http://attacker.test"},
+        )
+
+    assert missing_csrf.status_code == 403
+    assert cross_origin.status_code == 403
+    assert runtime.xiaomi_auth_starts == []
+    assert runtime.xiaomi_otps == []
+    assert runtime.xiaomi_cancellations == []
+    assert runtime.xiaomi_refreshes == 0
+    assert runtime.xiaomi_binding_saves == []
+    assert runtime.xiaomi_tests == []
+
+
+def test_xiaomi_binding_save_returns_one_time_unbind_confirmation() -> None:
+    runtime = FakeRuntime(
+        xiaomi_save_result=BindingSaveResult(
+            False,
+            "confirmation-public-id",
+            ("front", "back"),
+        )
+    )
+    with TestClient(create_app(runtime, csrf_token="fixed-token")) as client:
+        client.get("/settings")
+        response = client.post(
+            "/api/xiaomi/bindings/save",
+            data={
+                "csrf_token": "fixed-token",
+                "selected_ids": ["binding-a", "binding-b"],
+                "display_names": '{"binding-a":"门口音箱"}',
+            },
+            headers={"Origin": "http://testserver"},
+        )
+
+    assert response.status_code == 409
+    assert response.json() == {
+        "detail": "unbind_confirmation_required",
+        "confirmation_id": "confirmation-public-id",
+        "affected_cameras": ["front", "back"],
+    }
+    assert runtime.xiaomi_binding_saves == [
+        (("binding-a", "binding-b"), None, {"binding-a": "门口音箱"})
+    ]
+    assert response.headers["cache-control"] == "no-store"
+
+
+@pytest.mark.parametrize(
+    ("success", "message"),
+    [(True, "测试成功"), (False, "测试失败")],
+)
+def test_xiaomi_manual_test_returns_exact_short_label(
+    success: bool,
+    message: str,
+) -> None:
+    runtime = FakeRuntime(xiaomi_test_success=success)
+    with TestClient(create_app(runtime, csrf_token="fixed-token")) as client:
+        client.get("/settings")
+        response = client.post(
+            "/api/xiaomi/bindings/binding-a/test",
+            data={"csrf_token": "fixed-token"},
+            headers={"Origin": "http://testserver"},
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {"success": success, "message": message}
+    assert runtime.xiaomi_tests == ["binding-a"]
+
+
+def test_xiaomi_frontend_polls_each_second_without_page_reload() -> None:
+    runtime = FakeRuntime()
+    with TestClient(create_app(runtime, csrf_token="fixed-token")) as client:
+        script = client.get("/static/app.js").text
+
+    assert "data-xiaomi-settings" in script
+    assert "setInterval" in script
+    assert "1000" in script
+    assert "location.reload" not in script
+    assert "window.location" not in script
+
+
+def test_rule_enable_reports_unavailable_speaker_as_conflict() -> None:
+    runtime = FakeRuntime(rule_error=ValueError("speaker_unavailable"))
+    with TestClient(create_app(runtime, csrf_token="fixed-token")) as client:
+        client.get("/")
+        response = client.post(
+            "/commands/camera-rule",
+            data={
+                "csrf_token": "fixed-token",
+                "camera_id": "front",
+                "enabled": "true",
+            },
+            headers={"Origin": "http://testserver", "Accept": "application/json"},
+        )
+
+    assert response.status_code == 409
+    assert response.json() == {"detail": "speaker_unavailable"}

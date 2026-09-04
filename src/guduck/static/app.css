@@ -220,6 +220,115 @@ dd {
   max-width: 520px;
 }
 
+.xiaomi-settings {
+  display: grid;
+  gap: 16px;
+}
+
+.xiaomi-auth-form,
+.xiaomi-otp-form,
+.xiaomi-bindings-form {
+  display: grid;
+  gap: 12px;
+}
+
+.xiaomi-auth-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 10px;
+}
+
+.xiaomi-auth-fields label,
+.xiaomi-otp-form label,
+.xiaomi-device > label {
+  min-width: 0;
+  display: grid;
+  gap: 6px;
+  color: #60676d;
+  font-size: 13px;
+}
+
+.xiaomi-auth-fields input,
+.xiaomi-otp-form input[type="text"],
+.xiaomi-device input[type="text"] {
+  width: 100%;
+  min-height: 38px;
+  padding: 7px 9px;
+  border: 1px solid #bfc6cb;
+  border-radius: 4px;
+  color: #202428;
+  background: #fff;
+  font: inherit;
+}
+
+.xiaomi-otp-form {
+  max-width: 520px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+}
+
+.xiaomi-toolbar,
+.xiaomi-confirm-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.xiaomi-toolbar .field-error {
+  margin-left: auto;
+}
+
+.xiaomi-device-list {
+  display: grid;
+  gap: 8px;
+}
+
+.xiaomi-device {
+  padding: 12px;
+  display: grid;
+  grid-template-columns: minmax(150px, 1fr) minmax(120px, 0.8fr) minmax(150px, 1fr) auto minmax(64px, auto);
+  align-items: center;
+  gap: 10px;
+  border: 1px solid #d8dde1;
+  border-radius: 6px;
+  background: #fff;
+}
+
+.xiaomi-device-check {
+  display: flex !important;
+  align-items: center;
+  color: #202428 !important;
+  font-weight: 650;
+}
+
+.xiaomi-device-check input {
+  width: 18px;
+  height: 18px;
+}
+
+.xiaomi-device-meta,
+.xiaomi-device [data-xiaomi-test-result] {
+  color: #60676d;
+  font-size: 12px;
+}
+
+.xiaomi-confirm {
+  padding: 14px;
+  border: 1px solid #d39b16;
+  border-radius: 6px;
+  background: #fff5d6;
+}
+
+.xiaomi-confirm p {
+  margin-bottom: 8px;
+}
+
+.xiaomi-confirm-actions {
+  margin-top: 12px;
+  justify-content: flex-end;
+}
+
 .adapter-form fieldset {
   min-width: 0;
   margin: 0 0 16px;
@@ -1063,6 +1172,16 @@ tbody tr:last-child td {
   .region-fields {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+
+  .xiaomi-auth-fields,
+  .xiaomi-device {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .xiaomi-auth-fields .button,
+  .xiaomi-device [data-xiaomi-test-result] {
+    justify-self: start;
+  }
 }
 
 @media (max-width: 440px) {
@@ -1096,5 +1215,27 @@ tbody tr:last-child td {
 
   .region-actions .button {
     width: 100%;
+  }
+
+  .xiaomi-auth-fields,
+  .xiaomi-otp-form,
+  .xiaomi-device {
+    grid-template-columns: 1fr;
+  }
+
+  .xiaomi-toolbar,
+  .xiaomi-confirm-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .xiaomi-toolbar form,
+  .xiaomi-toolbar .button,
+  .xiaomi-confirm-actions .button {
+    width: 100%;
+  }
+
+  .xiaomi-toolbar .field-error {
+    margin-left: 0;
   }
 }
