@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from guduck.detection_region import DetectionRegion
 from guduck.redaction import redact
@@ -18,8 +19,8 @@ from guduck.rules import (
 )
 from guduck.settings import ObjectDetectorAdapter
 
-SCHEMA_VERSION = 3
-_SCHEMA_TABLES = frozenset({"camera_rules", "cameras", "events", "rule_configs"})
+SCHEMA_VERSION = 4
+_SCHEMA_TABLES = frozenset({"camera_rules", "cameras", "events", "rule_configs", "xiaomi_account", "speaker_bindings"})
 _CAMERA_COLUMNS = frozenset(
     {
         "stream_id",
@@ -42,6 +43,12 @@ _V3_TABLE_DEFINITIONS = {
     **_V2_TABLE_DEFINITIONS,
     "cameras": "CREATE TABLE cameras ( stream_id TEXT PRIMARY KEY, speaker_id TEXT NOT NULL, first_seen_at TEXT NOT NULL, last_seen_at TEXT NOT NULL, region_x REAL NOT NULL DEFAULT 0, region_y REAL NOT NULL DEFAULT 0, region_width REAL NOT NULL DEFAULT 1, region_height REAL NOT NULL DEFAULT 1 )",
 }
+_V4_TABLE_DEFINITIONS = {
+    **_V3_TABLE_DEFINITIONS,
+    "cameras": "CREATE TABLE cameras ( stream_id TEXT PRIMARY KEY, speaker_id TEXT, first_seen_at TEXT NOT NULL, last_seen_at TEXT NOT NULL, region_x REAL NOT NULL DEFAULT 0, region_y REAL NOT NULL DEFAULT 0, region_width REAL NOT NULL DEFAULT 1, region_height REAL NOT NULL DEFAULT 1 )",
+    "xiaomi_account": "CREATE TABLE xiaomi_account ( id INTEGER PRIMARY KEY CHECK (id = 1), username TEXT NOT NULL, token_json TEXT NOT NULL, updated_at TEXT NOT NULL )",
+    "speaker_bindings": "CREATE TABLE speaker_bindings ( binding_id TEXT PRIMARY KEY, device_id TEXT NOT NULL UNIQUE, display_name TEXT NOT NULL, mina_name TEXT NOT NULL, hardware TEXT NOT NULL, miot_did TEXT, last_seen_at TEXT, bound INTEGER NOT NULL CHECK (bound IN (0, 1)), available INTEGER NOT NULL CHECK (available IN (0, 1)), test_status TEXT NOT NULL, updated_at TEXT NOT NULL )",
+}
 _LEGACY_WELCOME_PHRASES = (
     "你好呀，欢迎回来。",
     "嗨，很高兴见到你。",
@@ -56,7 +63,7 @@ class IncompatibleSchemaError(RuntimeError):
 @dataclass(frozen=True)
 class CameraConfig:
     stream_id: str
-    speaker_id: str
+    speaker_id: str | None
     first_seen_at: str
     last_seen_at: str
     detection_region: DetectionRegion
@@ -105,6 +112,61 @@ class StoredEvent:
         return json.dumps(self.details, ensure_ascii=False, sort_keys=True)
 
 
+@dataclass(frozen=True)
+class XiaomiAccount:
+    id: int
+    username: str
+    token_json: str
+    updated_at: str
+
+@dataclass(frozen=True)
+class DiscoveredSpeaker:
+    device_id: str
+    mina_name: str
+    hardware: str
+    miot_did: str | None
+
+@dataclass(frozen=True)
+class SpeakerBinding:
+    binding_id: str
+    device_id: str
+    display_name: str
+    mina_name: str
+    hardware: str
+    miot_did: str | None
+    last_seen_at: str | None
+    bound: bool
+    available: bool
+    test_status: str
+    updated_at: str
+
+@dataclass(frozen=True)
+class BindingSaveResult:
+    saved: bool
+    confirmation_id: str | None
+    affected_camera_ids: tuple[str, ...]
+
+@dataclass(frozen=True)
+class TestResult:
+    success: bool
+
+
+class DatabaseTokenStore:
+    def __init__(self, storage: "Storage") -> None:
+        self._storage = storage
+
+    async def load(self) -> dict[str, object] | None:
+        account = self._storage.get_xiaomi_account()
+        if account is None:
+            return None
+        value = json.loads(account.token_json)
+        return value if isinstance(value, dict) else None
+
+    async def save(self, token: Mapping[str, object]) -> None:
+        account = self._storage.get_xiaomi_account()
+        self._storage.save_xiaomi_account(account.username if account else "", json.dumps(dict(token), ensure_ascii=False))
+
+
 def normalize_welcome_phrases(lines: list[str] | tuple[str, ...]) -> tuple[str, ...]:
     phrases = tuple(dict.fromkeys(line.strip() for line in lines if line.strip()))
     if not phrases:
@@ -148,7 +210,7 @@ class Storage:
                     """
                     CREATE TABLE cameras (
                         stream_id TEXT PRIMARY KEY,
-                        speaker_id TEXT NOT NULL,
+                        speaker_id TEXT,
                         first_seen_at TEXT NOT NULL,
                         last_seen_at TEXT NOT NULL,
                         region_x REAL NOT NULL DEFAULT 0,
@@ -179,10 +241,23 @@ class Storage:
                         latency_ms INTEGER,
                         details_json TEXT NOT NULL
                     );
-                    PRAGMA user_version = 3;
+                    CREATE TABLE xiaomi_account (
+                        id INTEGER PRIMARY KEY CHECK (id = 1), username TEXT NOT NULL,
+                        token_json TEXT NOT NULL, updated_at TEXT NOT NULL
+                    );
+                    CREATE TABLE speaker_bindings (
+                        binding_id TEXT PRIMARY KEY, device_id TEXT NOT NULL UNIQUE,
+                        display_name TEXT NOT NULL, mina_name TEXT NOT NULL, hardware TEXT NOT NULL,
+                        miot_did TEXT, last_seen_at TEXT, bound INTEGER NOT NULL CHECK (bound IN (0, 1)),
+                        available INTEGER NOT NULL CHECK (available IN (0, 1)), test_status TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    );
+                    PRAGMA user_version = 4;
                     """
                 )
-            elif schema_version == 2 and table_names == _SCHEMA_TABLES:
+                schema_version = 4
+                table_names = _SCHEMA_TABLES
+            elif schema_version == 2 and table_names == frozenset({"camera_rules", "cameras", "events", "rule_configs"}):
                 if not self._schema_matches(connection, _V2_TABLE_DEFINITIONS):
                     raise IncompatibleSchemaError(
                         "incompatible database; reset the database using the runbook"
@@ -202,15 +277,37 @@ class Storage:
                         "ALTER TABLE cameras ADD COLUMN region_height REAL NOT NULL DEFAULT 1"
                     )
                     connection.execute("PRAGMA user_version = 3")
+                    schema_version = 3
                 except Exception:
                     connection.rollback()
                     raise
-            elif schema_version != SCHEMA_VERSION or table_names != _SCHEMA_TABLES:
+            if schema_version == 3:
+                if table_names != frozenset({"camera_rules", "cameras", "events", "rule_configs"}) or not self._schema_matches(connection, _V3_TABLE_DEFINITIONS):
+                    raise IncompatibleSchemaError("incompatible database; reset the database using the runbook")
+                connection.commit()
+                connection.execute("BEGIN")
+                try:
+                    connection.execute("ALTER TABLE cameras RENAME TO cameras_old")
+                    connection.execute("ALTER TABLE camera_rules RENAME TO camera_rules_old")
+                    connection.execute("""CREATE TABLE cameras (stream_id TEXT PRIMARY KEY, speaker_id TEXT, first_seen_at TEXT NOT NULL, last_seen_at TEXT NOT NULL, region_x REAL NOT NULL DEFAULT 0, region_y REAL NOT NULL DEFAULT 0, region_width REAL NOT NULL DEFAULT 1, region_height REAL NOT NULL DEFAULT 1)""")
+                    connection.execute("INSERT INTO cameras SELECT stream_id,speaker_id,first_seen_at,last_seen_at,region_x,region_y,region_width,region_height FROM cameras_old")
+                    connection.execute("""CREATE TABLE camera_rules (camera_id TEXT NOT NULL REFERENCES cameras(stream_id), rule_id TEXT NOT NULL, enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)), updated_at TEXT NOT NULL, PRIMARY KEY (camera_id, rule_id))""")
+                    connection.execute("INSERT INTO camera_rules SELECT * FROM camera_rules_old")
+                    connection.execute("DROP TABLE camera_rules_old")
+                    connection.execute("DROP TABLE cameras_old")
+                    connection.execute("""CREATE TABLE xiaomi_account (id INTEGER PRIMARY KEY CHECK (id = 1), username TEXT NOT NULL, token_json TEXT NOT NULL, updated_at TEXT NOT NULL)""")
+                    connection.execute("""CREATE TABLE speaker_bindings (binding_id TEXT PRIMARY KEY, device_id TEXT NOT NULL UNIQUE, display_name TEXT NOT NULL, mina_name TEXT NOT NULL, hardware TEXT NOT NULL, miot_did TEXT, last_seen_at TEXT, bound INTEGER NOT NULL CHECK (bound IN (0, 1)), available INTEGER NOT NULL CHECK (available IN (0, 1)), test_status TEXT NOT NULL, updated_at TEXT NOT NULL)""")
+                    connection.execute("PRAGMA user_version = 4")
+                except Exception:
+                    connection.rollback(); raise
+                table_names = _SCHEMA_TABLES
+                schema_version = 4
+            if schema_version != SCHEMA_VERSION or table_names != _SCHEMA_TABLES:
                 raise IncompatibleSchemaError(
                     "incompatible database; reset the database using the runbook"
                 )
             else:
-                if not self._schema_matches(connection, _V3_TABLE_DEFINITIONS):
+                if not self._schema_matches(connection, _V4_TABLE_DEFINITIONS):
                     raise IncompatibleSchemaError(
                         "incompatible database; reset the database using the runbook"
                     )
@@ -262,7 +359,7 @@ class Storage:
             self._prune(connection)
 
     def sync_cameras(
-        self, stream_ids: Sequence[str], default_speaker_id: str
+        self, stream_ids: Sequence[str], default_speaker_id: str | None = None
     ) -> list[CameraConfig]:
         discovered_ids = sorted(set(stream_ids))
         timestamp = self._now()
@@ -317,16 +414,16 @@ class Storage:
             if cursor.rowcount != 1:
                 raise KeyError((camera_id, rule_id))
 
-    def camera_speaker_id(self, camera_id: str) -> str:
+    def camera_speaker_id(self, camera_id: str) -> str | None:
         with self._connect() as connection:
             row = connection.execute(
                 "SELECT speaker_id FROM cameras WHERE stream_id = ?", (camera_id,)
             ).fetchone()
         if row is None:
             raise KeyError(camera_id)
-        return str(row["speaker_id"])
+        return row["speaker_id"]
 
-    def set_camera_speaker(self, camera_id: str, speaker_id: str) -> None:
+    def set_camera_speaker(self, camera_id: str, speaker_id: str | None) -> None:
         with self._connect() as connection:
             cursor = connection.execute(
                 "UPDATE cameras SET speaker_id = ? WHERE stream_id = ?",
@@ -449,6 +546,59 @@ class Storage:
             ).fetchone()
         return None if row is None else self._stored_event(row)
 
+    def get_xiaomi_account(self) -> XiaomiAccount | None:
+        with self._connect() as connection:
+            row = connection.execute("SELECT * FROM xiaomi_account WHERE id = 1").fetchone()
+        return None if row is None else XiaomiAccount(row["id"], row["username"], row["token_json"], row["updated_at"])
+
+    def save_xiaomi_account(self, username: str, token_json: str) -> None:
+        with self._connect() as connection:
+            connection.execute("INSERT INTO xiaomi_account(id,username,token_json,updated_at) VALUES (1,?,?,?) ON CONFLICT(id) DO UPDATE SET username=excluded.username,token_json=excluded.token_json,updated_at=excluded.updated_at", (username, token_json, self._now()))
+
+    def clear_xiaomi_account(self) -> None:
+        with self._connect() as connection:
+            connection.execute("DELETE FROM xiaomi_account WHERE id = 1")
+
+    def list_speaker_bindings(self) -> list[SpeakerBinding]:
+        with self._connect() as connection:
+            rows = connection.execute("SELECT * FROM speaker_bindings ORDER BY binding_id").fetchall()
+        return [self._speaker_binding(row) for row in rows]
+
+    def upsert_discovered_speakers(self, devices: Sequence[DiscoveredSpeaker]) -> list[SpeakerBinding]:
+        now = self._now()
+        with self._connect() as connection:
+            seen = set()
+            for device in devices:
+                seen.add(device.device_id)
+                row = connection.execute("SELECT binding_id FROM speaker_bindings WHERE device_id = ?", (device.device_id,)).fetchone()
+                if row:
+                    connection.execute("UPDATE speaker_bindings SET mina_name=?,hardware=?,miot_did=?,last_seen_at=?,available=1,updated_at=? WHERE device_id=?", (device.mina_name, device.hardware, device.miot_did, now, now, device.device_id))
+                else:
+                    connection.execute("INSERT INTO speaker_bindings VALUES (?,?,?,?,?,?,?,?,?,?,?)", (str(uuid.uuid4()), device.device_id, device.mina_name, device.mina_name, device.hardware, device.miot_did, now, 0, 1, "unknown", now))
+            if seen:
+                connection.execute("UPDATE speaker_bindings SET available=0,updated_at=? WHERE bound=1 AND device_id NOT IN (%s)" % ",".join("?" * len(seen)), (now, *seen))
+            else:
+                connection.execute("UPDATE speaker_bindings SET available=0,updated_at=? WHERE bound=1", (now,))
+        return self.list_speaker_bindings()
+
+    def save_speaker_bindings(self, selected_binding_ids: Sequence[str], confirmation_id: str | None = None) -> BindingSaveResult:
+        selected = set(selected_binding_ids)
+        with self._connect() as connection:
+            rows = connection.execute("SELECT * FROM speaker_bindings").fetchall()
+            known = {str(row["binding_id"]): row for row in rows}
+            if not selected <= known.keys():
+                raise ValueError("unknown speaker binding")
+            affected = tuple(sorted(str(row["stream_id"]) for row in connection.execute("SELECT stream_id FROM cameras WHERE speaker_id IN (SELECT device_id FROM speaker_bindings WHERE bound=1)").fetchall()))
+            unbinding = any(bool(row["bound"]) and bid not in selected for bid, row in known.items())
+            if unbinding and confirmation_id is None:
+                return BindingSaveResult(False, uuid.uuid4().hex, affected)
+            connection.execute("UPDATE speaker_bindings SET bound=0,updated_at=?", (self._now(),))
+            if selected:
+                connection.execute("UPDATE speaker_bindings SET bound=1,updated_at=? WHERE binding_id IN (%s)" % ",".join("?" * len(selected)), (self._now(), *selected))
+            if unbinding:
+                connection.execute("UPDATE cameras SET speaker_id=NULL WHERE speaker_id IN (SELECT device_id FROM speaker_bindings WHERE bound=0)")
+            return BindingSaveResult(True, confirmation_id, affected if unbinding else ())
+
     def journal_mode(self) -> str:
         with self._connect() as connection:
             return str(connection.execute("PRAGMA journal_mode").fetchone()[0])
@@ -478,6 +628,15 @@ class Storage:
             success=bool(row["success"]),
             latency_ms=row["latency_ms"],
             details_json=row["details_json"],
+        )
+
+    @staticmethod
+    def _speaker_binding(row: sqlite3.Row) -> SpeakerBinding:
+        return SpeakerBinding(
+            binding_id=row["binding_id"], device_id=row["device_id"], display_name=row["display_name"],
+            mina_name=row["mina_name"], hardware=row["hardware"], miot_did=row["miot_did"],
+            last_seen_at=row["last_seen_at"], bound=bool(row["bound"]), available=bool(row["available"]),
+            test_status=row["test_status"], updated_at=row["updated_at"],
         )
 
     @staticmethod

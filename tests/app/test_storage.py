@@ -102,13 +102,13 @@ def create_v2_database(path: Path) -> None:
         )
 
 
-def test_new_database_has_v3_schema_and_default_welcome_phrases(tmp_path: Path) -> None:
+def test_new_database_has_v4_schema_and_default_welcome_phrases(tmp_path: Path) -> None:
     storage = Storage(tmp_path / "app.db")
     storage.initialize()
 
     with sqlite3.connect(tmp_path / "app.db") as connection:
         version = connection.execute("PRAGMA user_version").fetchone()[0]
-    assert version == SCHEMA_VERSION == 3
+    assert version == SCHEMA_VERSION == 4
     assert storage.welcome_phrases() == EXPECTED_ENGLISH_WELCOME_PHRASES
     assert WELCOME_PHRASES == EXPECTED_ENGLISH_WELCOME_PHRASES
 
@@ -214,7 +214,7 @@ def test_initialize_migrates_v2_database_without_losing_data(tmp_path: Path) -> 
     storage.initialize()
 
     camera = storage.list_cameras()[0]
-    assert SCHEMA_VERSION == 3
+    assert SCHEMA_VERSION == 4
     assert camera.detection_region == FULL_FRAME_REGION
     assert camera.speaker_id == "bedroom"
     assert storage.camera_rule_enabled("front", WELCOME_RULE_ID) is True
